@@ -1,0 +1,13 @@
+# 构建产物
+dist/
+imahub
+*.exe
+
+# 运行时数据（含凭证，绝不入库）
+data/
+*.state
+
+# 日志与杂物
+*.log
+.buildlogs/
+.DS_Store

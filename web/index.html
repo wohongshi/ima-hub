@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImaHub</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M10 9h4v14h-4z M18 9h4v14h-4z' fill='%23fff' opacity='.9'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ 登录 / 注册 / 初始化 ============ -->
+<div id="login-view" class="login-wrap hidden">
+  <section class="login-hero">
+    <div class="hero-brand">
+      <div class="hero-logo" id="hero-logo"></div>
+      <div>
+        <h1 id="hero-site-name">ImaHub</h1>
+        <div class="ver" id="hero-version">IMA KNOWLEDGE HUB</div>
+      </div>
+    </div>
+    <div class="hero-mid">
+      <h2>把你的 ima 知识库<br>搬进团队协作空间</h2>
+      <p>浏览、搜索、上传与导入你的 ima 知识库与笔记，支持多人账号、MCP 接入，一个网关全部搞定。</p>
+      <div class="hero-features">
+        <div class="hero-feature"><span class="fi" data-hero-icon="folder"></span><span>知识库 / 文件夹全量浏览与搜索</span></div>
+        <div class="hero-feature"><span class="fi" data-hero-icon="upload"></span><span>网页端直接上传文件、导入网页链接</span></div>
+        <div class="hero-feature"><span data-hero-icon="note" class="fi"></span><span>笔记管理：新建、追加、全文搜索</span></div>
+        <div class="hero-feature"><span class="fi" data-hero-icon="key"></span><span>MCP 端点一键接入 AI 客户端</span></div>
+      </div>
+    </div>
+    <div class="hero-foot">ImaHub · 腾讯 ima 开放平台多人 Web 网关</div>
+  </section>
+
+  <section class="login-side">
+    <button class="btn icon ghost login-theme" id="login-theme-btn" title="切换主题"></button>
+    <div class="login-card">
+      <h2 id="auth-title">欢迎回来</h2>
+      <p class="sub" id="auth-sub">登录以访问你的 ima 知识库</p>
+
+      <div class="login-tabs" id="auth-tabs">
+        <button type="button" data-tab="login" class="active">登录</button>
+        <button type="button" data-tab="register">注册</button>
+      </div>
+
+      <form id="auth-form" autocomplete="off">
+        <div class="field">
+          <label for="auth-username">用户名</label>
+          <input class="input" id="auth-username" name="username" placeholder="请输入用户名" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="auth-password">密码</label>
+          <input class="input" id="auth-password" name="password" type="password" placeholder="请输入密码" autocomplete="current-password" required>
+        </div>
+        <div class="field hidden" id="auth-password2-field">
+          <label for="auth-password2">确认密码</label>
+          <input class="input" id="auth-password2" name="password2" type="password" placeholder="再次输入密码" autocomplete="new-password">
+        </div>
+        <button class="btn primary login-submit" id="auth-submit" type="submit">登 录</button>
+      </form>
+    </div>
+  </section>
+</div>
+
+<!-- ============ 主应用 ============ -->
+<div id="app-view" class="layout hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand">
+      <div class="side-logo" id="side-logo"></div>
+      <div>
+        <div class="name" id="side-site-name">ImaHub</div>
+        <div class="ver" id="side-version">IMA HUB</div>
+      </div>
+    </div>
+    <nav class="side-nav" id="side-nav">
+      <div class="side-group-title">工作台</div>
+      <button class="side-item" data-route="home"><span data-icon="home"></span>首页</button>
+      <button class="side-item" data-route="files"><span data-icon="folder"></span>文件 / 知识库</button>
+      <button class="side-item" data-route="notes"><span data-icon="note"></span>笔记</button>
+      <div class="side-group-title">账号</div>
+      <button class="side-item" data-route="settings"><span data-icon="settings"></span>设置</button>
+      <button class="side-item hidden" data-route="admin" id="nav-admin"><span data-icon="users"></span>管理后台</button>
+    </nav>
+    <div class="side-foot">
+      <div class="side-user">
+        <div class="avatar" id="side-avatar">U</div>
+        <div class="uinfo">
+          <div class="uname" id="side-username">—</div>
+          <div class="urole" id="side-userrole">—</div>
+        </div>
+      </div>
+      <div class="side-foot-actions">
+        <button class="btn sm" id="theme-btn" title="切换主题"><span data-icon="moon"></span>主题</button>
+        <button class="btn sm" id="logout-btn" title="退出登录"><span data-icon="logout"></span>退出</button>
+      </div>
+    </div>
+  </aside>
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="btn icon ghost hamburger" id="hamburger" title="菜单"><span data-icon="menu"></span></button>
+      <div class="page-title" id="page-title">文件 / 知识库</div>
+      <div class="spacer"></div>
+      <button class="btn icon ghost" id="top-theme-btn" title="切换主题"><span data-icon="moon"></span></button>
+    </header>
+    <main class="content" id="view-root"></main>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div class="toasts" id="toasts"></div>
+
+<script src="api.js"></script>
+<script src="ui.js"></script>
+<script src="view-files.js"></script>
+<script src="view-notes.js"></script>
+<script src="view-misc.js"></script>
+<script src="view-home.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
