@@ -301,8 +301,20 @@ func (s *Server) handleImaDownload(w http.ResponseWriter, r *http.Request, u *st
 		name += "." + ext
 	}
 	inline := q.Get("inline") == "1"
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if inline {
-		w.Header().Set("Content-Type", ima.MIMEForFile(name))
+		mt := ima.MIMEForFile(name)
+		base := strings.ToLower(strings.TrimSpace(strings.SplitN(mt, ";", 2)[0]))
+		switch base {
+		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "application/pdf":
+			w.Header().Set("Content-Type", mt)
+		case "text/plain", "text/markdown":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		default:
+			// 防存储型 XSS：HTML/SVG/XML 等一律降级纯文本（预览仍可读）
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "sandbox")
+		}
 		w.Header().Set("Content-Disposition", "inline")
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")

@@ -376,7 +376,7 @@ function renderHomeAnalysis() {
     '</div>';
 
   html += '</div>';
-  box.innerHTML = html;
+  box.innerHTML = head + html;
 
   const btn = $('#home-scan-btn', box);
   if (btn && !running) btn.addEventListener('click', startScan);
@@ -604,7 +604,7 @@ function renderHomeTasks() {
     list += '</div>';
   }
 
-  box.innerHTML = '<div class="card-body">' + quick + list + '</div>';
+  box.innerHTML = head + '<div class="card-body">' + quick + list + '</div>';
 
   const input = $('#task-quick-title', box);
   const addBtn = $('#task-quick-add', box);
@@ -749,7 +749,7 @@ function renderHomeRecent() {
       '</div>';
   });
   list += '</div>';
-  box.innerHTML = '<div class="card-body">' + list + '</div>';
+  box.innerHTML = head + '<div class="card-body">' + list + '</div>';
 
   $$('.recent-item', box).forEach(function (item) {
     const r = recent[Number(item.getAttribute('data-idx'))];
@@ -800,7 +800,7 @@ function renderHomeAccounts() {
       '</div>';
   });
   list += '</div>';
-  box.innerHTML = '<div class="card-body">' + list + '</div>';
+  box.innerHTML = head + '<div class="card-body">' + list + '</div>';
   mountIcons(box);
 }
 
@@ -861,7 +861,7 @@ function renderHomeToday() {
       '</div></div>';
   });
   list += '</div>';
-  box.innerHTML = '<div class="card-body">' + list + '</div>';
+  box.innerHTML = head + '<div class="card-body">' + list + '</div>';
   mountIcons(box);
 
   $$('.today-item', box).forEach(function (el) {
@@ -954,7 +954,7 @@ function renderHomeSchedule() {
       : ag + '<div class="hint">暂无即将到来的日程，点右上角添加</div>';
   }
 
-  box.innerHTML = '<div class="card-body">' + cal + ag + '</div>';
+  box.innerHTML = head + '<div class="card-body">' + cal + ag + '</div>';
   mountIcons(box);
 
   const bind = function (id, fn) {

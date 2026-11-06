@@ -297,9 +297,11 @@ func (s *Store) UpdateUser(id string, fn func(*User) error) error {
 	defer s.mu.Unlock()
 	for i := range s.d.Users {
 		if s.d.Users[i].ID == id {
-			if err := fn(&s.d.Users[i]); err != nil {
+			cp := s.d.Users[i]
+			if err := fn(&cp); err != nil {
 				return err
 			}
+			s.d.Users[i] = cp
 			return s.saveLocked()
 		}
 	}
@@ -364,9 +366,11 @@ func (s *Store) GetSettings() Settings {
 func (s *Store) UpdateSettings(fn func(*Settings) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := fn(&s.d.Settings); err != nil {
+	cp := s.d.Settings
+	if err := fn(&cp); err != nil {
 		return err
 	}
+	s.d.Settings = cp
 	return s.saveLocked()
 }
 
@@ -445,10 +449,12 @@ func (s *Store) UpdateTask(id string, fn func(*Task) error) error {
 	defer s.mu.Unlock()
 	for i := range s.d.Tasks {
 		if s.d.Tasks[i].ID == id {
-			if err := fn(&s.d.Tasks[i]); err != nil {
+			cp := s.d.Tasks[i]
+			if err := fn(&cp); err != nil {
 				return err
 			}
-			s.d.Tasks[i].UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = time.Now().Unix()
+			s.d.Tasks[i] = cp
 			return s.saveLocked()
 		}
 	}
@@ -502,9 +508,11 @@ func (s *Store) UpdateTeamAccount(id string, fn func(*IMAAccount) error) error {
 	defer s.mu.Unlock()
 	for i := range s.d.TeamAccounts {
 		if s.d.TeamAccounts[i].ID == id {
-			if err := fn(&s.d.TeamAccounts[i]); err != nil {
+			cp := s.d.TeamAccounts[i]
+			if err := fn(&cp); err != nil {
 				return err
 			}
+			s.d.TeamAccounts[i] = cp
 			return s.saveLocked()
 		}
 	}
@@ -554,10 +562,12 @@ func (s *Store) UpdateEvent(id string, fn func(*Event) error) error {
 	defer s.mu.Unlock()
 	for i := range s.d.Events {
 		if s.d.Events[i].ID == id {
-			if err := fn(&s.d.Events[i]); err != nil {
+			cp := s.d.Events[i]
+			if err := fn(&cp); err != nil {
 				return err
 			}
-			s.d.Events[i].UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = time.Now().Unix()
+			s.d.Events[i] = cp
 			return s.saveLocked()
 		}
 	}
@@ -608,10 +618,12 @@ func (s *Store) UpdateAnnouncement(id string, fn func(*Announcement) error) erro
 	defer s.mu.Unlock()
 	for i := range s.d.Announcements {
 		if s.d.Announcements[i].ID == id {
-			if err := fn(&s.d.Announcements[i]); err != nil {
+			cp := s.d.Announcements[i]
+			if err := fn(&cp); err != nil {
 				return err
 			}
-			s.d.Announcements[i].UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = time.Now().Unix()
+			s.d.Announcements[i] = cp
 			return s.saveLocked()
 		}
 	}

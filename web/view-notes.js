@@ -109,7 +109,7 @@ function renderNotebookList() {
     html += '<div style="padding:8px 4px"><button class="btn sm" id="nb-load-more" style="width:100%">加载更多</button></div>';
   }
   box.innerHTML = html;
-  $$('[data-nb]', box).forEach(function (b) {
+  $$('.kb-item', box).forEach(function (b) {
     b.addEventListener('click', function () {
       if (b.getAttribute('data-nb') === '__all') {
         notesState.notebook = null;

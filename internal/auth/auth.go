@@ -78,6 +78,10 @@ func VerifyPassword(password, encoded string) bool {
 	if err != nil {
 		return false
 	}
+	// 防御畸形/截断记录：want 为空时 pbkdf2(0 长度) 与空比较恒等通过（登录绕过）
+	if len(want) < 16 || len(want) > 64 {
+		return false
+	}
 	got := pbkdf2SHA256([]byte(password), salt, iter, len(want))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }

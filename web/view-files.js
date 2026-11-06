@@ -94,7 +94,7 @@ function renderKbList() {
   filesState.kbs.forEach(function (kb, idx) {
     const active = filesState.kb && String(filesState.kb.id) === String(kb.id);
     const cover = kb.cover_url
-      ? '<div class="kb-cover"><img src="' + escapeHtml(kb.cover_url) + '" alt="" onerror="this.parentNode.textContent=\'' + escapeHtml((kb.name || '?').charAt(0)) + '\'"></div>'
+      ? '<div class="kb-cover"><img src="' + escapeHtml(kb.cover_url) + '" alt="" data-fallback="' + escapeHtml((kb.name || '?').charAt(0)) + '"></div>'
       : '<div class="kb-cover">' + escapeHtml((kb.name || '?').charAt(0)) + '</div>';
     html += '<button class="kb-item' + (active ? ' active' : '') + '" data-kb-idx="' + idx + '">' + cover +
       '<div class="kb-name" title="' + escapeHtml(kb.name || '') + '">' + escapeHtml(kb.name || '(未命名知识库)') + '</div>' +
@@ -105,6 +105,11 @@ function renderKbList() {
     html += '<div style="padding:8px 4px"><button class="btn sm" id="kb-load-more" style="width:100%">加载更多</button></div>';
   }
   box.innerHTML = html;
+  $$('.kb-cover img', box).forEach(function (img) {
+    img.addEventListener('error', function () {
+      img.parentNode.textContent = img.getAttribute('data-fallback') || '?';
+    });
+  });
   $$('.kb-item', box).forEach(function (b) {
     b.addEventListener('click', function () {
       const kb = filesState.kbs[Number(b.getAttribute('data-kb-idx'))];

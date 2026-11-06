@@ -240,7 +240,7 @@ func toolDefs() []toolDef {
 		{"ima_search_knowledge", "在指定知识库中搜索内容", obj(`{"knowledge_base_id":`+str+`,"q":`+str+`,"cursor":`+str+`}`, "knowledge_base_id", "q")},
 		{"ima_get_media_info", "获取知识库条目的原文访问地址或笔记信息", obj(`{"media_id":`+str+`}`, "media_id")},
 		{"ima_download_media", "下载/读取知识库条目内容（文本截断返回，二进制返回元信息）", obj(`{"media_id":`+str+`}`, "media_id")},
-		{"ima_upload_file", "上传文件到 ima 知识库（file_path 服务端本地路径或 content_base64）", obj(`{"knowledge_base_id":`+str+`,"folder_id":`+str+`,"file_name":`+str+`,"file_path":`+str+`,"content_base64":`+str+`}`, "knowledge_base_id", "file_name")},
+		{"ima_upload_file", "上传文件到 ima 知识库（file_path 仅限服务端 data/mcp-uploads 目录内路径，或 content_base64）", obj(`{"knowledge_base_id":`+str+`,"folder_id":`+str+`,"file_name":`+str+`,"file_path":`+str+`,"content_base64":`+str+`}`, "knowledge_base_id", "file_name")},
 		{"ima_import_urls", "把网页/微信公众号文章 URL 导入知识库", obj(`{"knowledge_base_id":`+str+`,"folder_id":`+str+`,"urls":`+arr+`}`, "knowledge_base_id", "urls")},
 		{"ima_list_notebooks", "列出 ima 笔记本", obj(`{"cursor":` + str + `,"limit":` + num + `}`)},
 		{"ima_list_notes", "列出笔记（可按笔记本过滤）", obj(`{"folder_id":` + str + `,"cursor":` + str + `,"limit":` + num + `}`)},
@@ -605,7 +605,30 @@ func (s *Server) uploadFile(ctx context.Context, c *ima.Client, args map[string]
 	var size int64
 
 	if p := str("file_path"); p != "" {
-		f, err := os.Open(p)
+		// 安全：仅允许读取 MCP 上传目录（data/mcp-uploads）内的文件，
+		// 防止持有 MCP token 的调用方任意读取服务端文件（如 data.json 凭证）。
+		root := filepath.Join(filepath.Dir(s.TmpDir), "mcp-uploads")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return nil, err
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, err
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+			rootAbs = resolved
+		}
+		if abs != rootAbs && !strings.HasPrefix(abs, rootAbs+string(filepath.Separator)) {
+			return nil, fmt.Errorf("file_path 必须位于 MCP 上传目录内（%s）", rootAbs)
+		}
+		f, err := os.Open(abs)
 		if err != nil {
 			return nil, fmt.Errorf("打开 file_path 失败: %w", err)
 		}

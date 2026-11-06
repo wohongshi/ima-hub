@@ -48,7 +48,7 @@ async function api(method, path, body, opts) {
   if (!json || json.code !== 0) {
     const code = json ? json.code : -1;
     const msg = (json && json.msg) ? json.msg : ('请求失败（HTTP ' + res.status + '）');
-    const err = new ApiError(msg, code, code === 401 || res.status === 401);
+    const err = new ApiError(msg, code, res.status === 401 && path !== '/api/login' && path !== '/api/setup');
     if (err.unauthorized) {
       if (typeof onUnauthorized === 'function') onUnauthorized();
     } else if (!opts.silent) {
