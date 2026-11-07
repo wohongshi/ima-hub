@@ -87,6 +87,53 @@ async function loadIaAccounts() {
   }
 }
 
+/* ============ 多服务端列表（本地记住，一键填入） ============ */
+function loadServerEntries() {
+  try {
+    return JSON.parse(localStorage.getItem('imahub_servers') || '[]') || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveServerEntry(server, username) {
+  if (!server) return;
+  const list = loadServerEntries().filter(function (x) {
+    return !(x.server === server && x.username === username);
+  });
+  list.unshift({ server: server, username: username, at: Date.now() });
+  try {
+    localStorage.setItem('imahub_servers', JSON.stringify(list.slice(0, 8)));
+  } catch (e) { /* 存储满忽略 */ }
+}
+
+function renderServerChips(srvField) {
+  const list = loadServerEntries();
+  let box = $('#auth-server-list');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'auth-server-list';
+    srvField.parentNode.insertBefore(box, srvField.nextSibling);
+  }
+  if (!list.length) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = '<div class="chips" style="margin-top:6px">' + list.map(function (x, i) {
+    return '<button type="button" class="chip" data-srv-idx="' + i + '" title="' + escapeHtml(x.server) + '">' +
+      escapeHtml(x.server) + (x.username ? ' · ' + escapeHtml(x.username) : '') + '</button>';
+  }).join('') + '</div>';
+  $$('#auth-server-list .chip').forEach(function (el) {
+    el.addEventListener('click', function () {
+      const x = loadServerEntries()[Number(el.getAttribute('data-srv-idx'))];
+      if (!x) return;
+      $('#auth-server').value = x.server;
+      $('#auth-username').value = x.username || '';
+      $('#auth-password').focus();
+    });
+  });
+}
+
 /* ============ 登录 / 注册 / 初始化 ============ */
 function showLogin(mode) {
   if (isClientMode()) mode = 'login'; // 客户端固定「连接服务端」，无注册 / 初始化
@@ -131,6 +178,7 @@ function renderAuthForm() {
     pw2.classList.add('hidden');
     pw2Input.required = false;
     $('#auth-password').setAttribute('autocomplete', 'current-password');
+    renderServerChips(srvField);
     mountIcons($('#login-view'));
     return;
   }
@@ -216,6 +264,7 @@ function bindAuthEvents() {
         const loginBody = { username: username, password: password };
         if (isClientMode()) loginBody.server = $('#auth-server').value.trim(); // 留空由服务端用上次地址
         await apiPost('/api/login', loginBody);
+        if (isClientMode()) saveServerEntry(loginBody.server, username);
         await refreshMe();
         showApp();
       }

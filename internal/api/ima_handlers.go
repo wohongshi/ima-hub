@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"imahub/internal/ima"
 	"imahub/internal/store"
@@ -56,21 +59,39 @@ func (s *Server) handleImaKBs(w http.ResponseWriter, r *http.Request, u *store.U
 			return
 		}
 		limit := parseLimit(q.Get("limit"), 20, 50)
+		// 并发拉各账号（单账号 15s 超时），失败不影响其他人
+		type accOut struct {
+			items []map[string]any
+			errs  []map[string]any
+		}
+		outs := make([]accOut, len(accs))
+		var wg sync.WaitGroup
+		for i := range accs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				a := accs[i]
+				ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+				defer cancel()
+				rsp, err := s.clientFor(&a).SearchKnowledgeBase(ctx, q.Get("q"), "", limit)
+				if err != nil {
+					outs[i].errs = append(outs[i].errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
+					return
+				}
+				for _, it := range rsp.InfoList {
+					outs[i].items = append(outs[i].items, map[string]any{
+						"id": it.ID, "name": it.Name, "cover_url": it.CoverURL,
+						"ia": a.ID, "account_name": a.Name,
+					})
+				}
+			}(i)
+		}
+		wg.Wait()
 		items := []map[string]any{}
 		errs := []map[string]any{}
-		for i := range accs {
-			a := accs[i]
-			rsp, err := s.clientFor(&a).SearchKnowledgeBase(r.Context(), q.Get("q"), "", limit)
-			if err != nil {
-				errs = append(errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
-				continue
-			}
-			for _, it := range rsp.InfoList {
-				items = append(items, map[string]any{
-					"id": it.ID, "name": it.Name, "cover_url": it.CoverURL,
-					"ia": a.ID, "account_name": a.Name,
-				})
-			}
+		for i := range outs {
+			items = append(items, outs[i].items...)
+			errs = append(errs, outs[i].errs...)
 		}
 		writeOK(w, map[string]any{"info_list": items, "errors": errs, "is_end": true, "next_cursor": "", "aggregated": true})
 		return
@@ -573,32 +594,49 @@ func (s *Server) handleImaNotebooks(w http.ResponseWriter, r *http.Request, u *s
 			return
 		}
 		limit := parseLimit(q.Get("limit"), 20, 50)
+		// 并发逐账号翻页拉全量（上限 10 页/账号），单账号 30s 超时
+		type accOut struct {
+			items []map[string]any
+			errs  []map[string]any
+		}
+		outs := make([]accOut, len(accs))
+		var wg sync.WaitGroup
+		for i := range accs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				a := accs[i]
+				ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+				defer cancel()
+				cursor := "0"
+				for page := 0; page < 10; page++ {
+					rsp, err := s.clientFor(&a).ListNotebook(ctx, cursor, limit)
+					if err != nil {
+						outs[i].errs = append(outs[i].errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
+						return
+					}
+					for _, f := range rsp.NoteFolderInfos {
+						outs[i].items = append(outs[i].items, map[string]any{
+							"folder_id": f.FolderID, "name": f.Name,
+							"create_time": f.CreateTime, "modify_time": f.ModifyTime,
+							"note_number": f.NoteNumber, "parent_folder_id": f.ParentFolderID,
+							"folder_type": f.FolderType,
+							"ia":          a.ID, "account_name": a.Name,
+						})
+					}
+					if rsp.IsEnd || rsp.NextCursor == "" {
+						break
+					}
+					cursor = rsp.NextCursor
+				}
+			}(i)
+		}
+		wg.Wait()
 		items := []map[string]any{}
 		errs := []map[string]any{}
-		for i := range accs {
-			a := accs[i]
-			// 聚合模式逐账号翻页拉全量（上限 10 页/账号），is_end 才能如实为 true
-			cursor := "0"
-			for page := 0; page < 10; page++ {
-				rsp, err := s.clientFor(&a).ListNotebook(r.Context(), cursor, limit)
-				if err != nil {
-					errs = append(errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
-					break
-				}
-				for _, f := range rsp.NoteFolderInfos {
-					items = append(items, map[string]any{
-						"folder_id": f.FolderID, "name": f.Name,
-						"create_time": f.CreateTime, "modify_time": f.ModifyTime,
-						"note_number": f.NoteNumber, "parent_folder_id": f.ParentFolderID,
-						"folder_type": f.FolderType,
-						"ia":          a.ID, "account_name": a.Name,
-					})
-				}
-				if rsp.IsEnd || rsp.NextCursor == "" {
-					break
-				}
-				cursor = rsp.NextCursor
-			}
+		for i := range outs {
+			items = append(items, outs[i].items...)
+			errs = append(errs, outs[i].errs...)
 		}
 		writeOK(w, map[string]any{"note_folder_infos": items, "errors": errs, "is_end": true, "next_cursor": "", "aggregated": true})
 		return

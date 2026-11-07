@@ -125,6 +125,11 @@ func main() {
 		defer close(stopSync)
 	}
 
+	// 上传队列自动续传（双模式；离线/失败的文件恢复后静默补传）
+	stopDrain := make(chan struct{})
+	go srv.RunQueueDrainer(stopDrain)
+	defer close(stopDrain)
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch

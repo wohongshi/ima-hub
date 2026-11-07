@@ -94,6 +94,23 @@ type Announcement struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+// UploadQueueItem 离线/失败上传队列条目（文件存 data/queue/，恢复后自动续传）。
+type UploadQueueItem struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"` // 归属用户（续传记账用）
+	Name      string `json:"name"`    // 上传文件名
+	Path      string `json:"path"`    // 队列目录内文件绝对路径
+	Size      int64  `json:"size"`
+	KBID      string `json:"kb_id"`
+	FolderID  string `json:"folder_id,omitempty"`
+	IA        string `json:"ia,omitempty"` // 目标账号（空=自动分配）
+	Status    string `json:"status"`       // pending | failed
+	Error     string `json:"error,omitempty"`
+	Attempts  int    `json:"attempts"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 type Session struct {
 	UserID    string `json:"user_id"`
 	CreatedAt int64  `json:"created_at"`
@@ -110,10 +127,11 @@ type Settings struct {
 	AskAPIKey  string `json:"ask_api_key"`
 	AskModel   string `json:"ask_model"`
 	// 客户端模式（client）本地状态：服务端地址、会话、上次同步时间
-	ClientServerURL   string `json:"client_server_url,omitempty"`
-	ClientSession     string `json:"client_session,omitempty"`
-	ClientSessionUser string `json:"client_session_user,omitempty"`
-	ClientLastSync    int64  `json:"client_last_sync,omitempty"`
+	ClientServerURL    string `json:"client_server_url,omitempty"`
+	ClientSession      string `json:"client_session,omitempty"`
+	ClientSessionUser  string `json:"client_session_user,omitempty"`
+	ClientLastSync     int64  `json:"client_last_sync,omitempty"`
+	ClientActivitySync int64  `json:"client_activity_sync,omitempty"` // 活动流水增量游标（已推送的最大 At）
 }
 
 type data struct {
@@ -129,6 +147,8 @@ type data struct {
 	Announcements []Announcement `json:"announcements,omitempty"`
 	// Tombstones 任务/日程删除墓碑（"task:<id>"/"event:<id>" → 删除时间），离线同步 LWW 用。
 	Tombstones map[string]int64 `json:"tombstones,omitempty"`
+	// UploadQueue 离线/失败上传队列（文件在 data/queue/）。
+	UploadQueue []UploadQueueItem `json:"upload_queue,omitempty"`
 }
 
 type Store struct {
@@ -692,6 +712,92 @@ func (s *Store) AllIMAAccounts() []OwnedAccount {
 		})
 	}
 	return out
+}
+
+// --- 上传队列 ---
+
+// AddQueueItem 入队（调用方负责把文件放进队列目录）。
+func (s *Store) AddQueueItem(it UploadQueueItem) UploadQueueItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if it.ID == "" {
+		it.ID = "q" + RandomToken()[:11]
+	}
+	now := time.Now().Unix()
+	if it.CreatedAt == 0 {
+		it.CreatedAt = now
+	}
+	it.UpdatedAt = now
+	s.d.UploadQueue = append(s.d.UploadQueue, it)
+	_ = s.saveLocked()
+	return it
+}
+
+// ListQueue 队列快照（含全部状态）。
+func (s *Store) ListQueue() []UploadQueueItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]UploadQueueItem, len(s.d.UploadQueue))
+	copy(out, s.d.UploadQueue)
+	return out
+}
+
+// UpdateQueueItem 更新队列条目（副本提交）。
+func (s *Store) UpdateQueueItem(id string, fn func(*UploadQueueItem) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.d.UploadQueue {
+		if s.d.UploadQueue[i].ID == id {
+			cp := s.d.UploadQueue[i]
+			if err := fn(&cp); err != nil {
+				return err
+			}
+			cp.UpdatedAt = time.Now().Unix()
+			s.d.UploadQueue[i] = cp
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
+}
+
+// DeleteQueueItem 出队（调用方负责删文件）。
+func (s *Store) DeleteQueueItem(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.d.UploadQueue {
+		if s.d.UploadQueue[i].ID == id {
+			s.d.UploadQueue = append(s.d.UploadQueue[:i], s.d.UploadQueue[i+1:]...)
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
+}
+
+// MergeAnnouncements 公告按 ID 合并（只进不退，取较新）。
+func (s *Store) MergeAnnouncements(in []Announcement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, a := range in {
+		found := false
+		for i := range s.d.Announcements {
+			if s.d.Announcements[i].ID == a.ID {
+				found = true
+				if s.d.Announcements[i].UpdatedAt < a.UpdatedAt {
+					s.d.Announcements[i] = a
+					changed = true
+				}
+				break
+			}
+		}
+		if !found {
+			s.d.Announcements = append(s.d.Announcements, a)
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.saveLocked()
+	}
 }
 
 // --- 团队共享账号池 ---

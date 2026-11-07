@@ -86,9 +86,14 @@ function qs(path, params) {
  * @returns {Promise<{media_id:string, repeated:boolean, ia?:string, account_name?:string, kb_id?:string}>}
  */
 function apiUpload(file, fields, onProgress) {
+  return apiUploadTo('/api/ima/upload', file, fields, onProgress);
+}
+
+/** multipart 上传到指定端点（离线队列走 /api/queue/upload，字段同 apiUpload） */
+function apiUploadTo(url, file, fields, onProgress) {
   return new Promise(function (resolve, reject) {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/ima/upload', true);
+    xhr.open('POST', url, true);
     xhr.withCredentials = true;
     if (xhr.upload && onProgress) {
       xhr.upload.onprogress = function (e) {

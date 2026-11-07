@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,12 +191,23 @@ func (l *ClientLink) SyncNow() error {
 		return fmt.Errorf("未连接服务端")
 	}
 
-	// 1) push：本地任务/日程/墓碑/活动
+	// 1) push：任务/日程/墓碑全量（体量小），活动按游标增量（ID 幂等兜底）
+	cursor := l.s.Store.GetSettings().ClientActivitySync
+	acts := []store.Activity{}
+	maxAt := cursor
+	for _, a := range l.s.Store.ListActivities(500) {
+		if a.At >= cursor-30 { // 30s 重叠窗口防边界漏推
+			acts = append(acts, a)
+		}
+		if a.At > maxAt {
+			maxAt = a.At
+		}
+	}
 	push := map[string]any{
 		"tasks":      l.s.Store.ListTasks(),
 		"events":     l.s.Store.ListEvents(),
 		"tombstones": l.s.Store.TombstonesCopy(),
-		"activities": l.s.Store.ListActivities(500),
+		"activities": acts,
 	}
 	raw, _ := json.Marshal(push)
 	resp, err := hc.Post(url+"/api/sync/push", "application/json", bytes.NewReader(raw))
@@ -209,9 +221,15 @@ func (l *ClientLink) SyncNow() error {
 		l.setErr(fmt.Errorf("push HTTP %d", resp.StatusCode))
 		return fmt.Errorf("同步推送失败：HTTP %d", resp.StatusCode)
 	}
+	// 活动游标只在推送成功后前进
+	_ = l.s.Store.UpdateSettings(func(st *store.Settings) error {
+		st.ClientActivitySync = maxAt
+		return nil
+	})
 
-	// 2) pull：团队数据 + 分发 key
-	resp2, err := hc.Get(url + "/api/sync/pull")
+	// 2) pull：增量拉取团队数据 + 分发 key
+	since := l.s.Store.GetSettings().ClientLastSync
+	resp2, err := hc.Get(url + "/api/sync/pull?since=" + strconv.FormatInt(since, 10))
 	if err != nil {
 		l.setErr(err)
 		return fmt.Errorf("同步拉取失败：%v", err)
@@ -244,15 +262,15 @@ func (l *ClientLink) SyncNow() error {
 			AskAPIKey  string `json:"ask_api_key"`
 			AskModel   string `json:"ask_model"`
 		} `json:"settings"`
+		Tombstones map[string]int64 `json:"tombstones"`
 	}
 	if err := json.Unmarshal(envelope.Data, &pull); err != nil {
 		return fmt.Errorf("同步拉取失败：%v", err)
 	}
 
-	// 3) 整表落本地（push 已合并，pull 结果即权威）
-	l.s.Store.ReplaceTasks(pull.Tasks)
-	l.s.Store.ReplaceEvents(pull.Events)
-	l.s.Store.ReplaceAnnouncements(pull.Announcements)
+	// 3) LWW 合并变更项（增量安全：只并入返回的任务/日程/墓碑与公告）
+	l.s.Store.SyncMerge(pull.Tasks, pull.Events, pull.Tombstones)
+	l.s.Store.MergeAnnouncements(pull.Announcements)
 	// 我的 key 落用户自有账号，其余进团队缓存（直连团队内容用）
 	meName := l.s.Store.GetSettings().ClientSessionUser
 	own := []store.IMAAccount{}

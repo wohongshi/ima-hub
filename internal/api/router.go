@@ -36,6 +36,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/client/sync", s.requireAuth(s.handleClientSyncNow))
 	mux.HandleFunc("GET /api/client/status", s.requireAuth(s.handleClientStatus))
 
+	// 离线上传队列（排队/自动续传/重试）
+	mux.HandleFunc("POST /api/queue/upload", s.requireAuth(s.handleQueueUpload))
+	mux.HandleFunc("GET /api/queue", s.requireAuth(s.handleQueueList))
+	mux.HandleFunc("POST /api/queue/drain", s.requireAuth(s.handleQueueDrain))
+	mux.HandleFunc("POST /api/queue/{id}/retry", s.requireAuth(s.handleQueueRetry))
+	mux.HandleFunc("DELETE /api/queue/{id}", s.requireAuth(s.handleQueueDelete))
+
 	// 管理
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminUsers))
 	mux.HandleFunc("POST /api/admin/users", s.requireAdmin(s.handleAdminCreateUser))

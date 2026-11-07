@@ -154,3 +154,17 @@ IMA 凭证优先级：用户本人绑定 > 服务端默认凭证；都没有则�
 - GET /api/server-info 增加 mode("serve"|"client")，client 模式带 connected/server/last_sync。
 - 客户端模式：POST /api/login 增加可选 server 字段（服务端地址）；/api/setup、/api/register 禁用；公告写接口返回 400（公告在服务端管理）。
 - 活动流水按 ID 幂等（同步重放不重复计）；删除任务/日程写 tombstones（"task:<id>"/"event:<id>" → unix 秒）。
+
+## v0.3.0 增强（离线上传队列 / 增量同步）
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| POST | /api/queue/upload | 登录 | 入队（multipart file/kb_id/folder_id/ia），文件暂存 data/queue/ |
+| GET | /api/queue | 登录 | 队列列表（pending \| failed，含 error/attempts） |
+| POST | /api/queue/drain | 登录 | 立即续传全部 pending，返回 {sent} |
+| POST | /api/queue/{id}/retry | 登录 | 单条重试（状态复位后立即尝试） |
+| DELETE | /api/queue/{id} | 登录 | 删除条目与暂存文件 |
+
+- 队列由后台引擎每 60 秒自动续传；成功条目出队并记活动流水（含 BumpUpload 统计）。
+- `GET /api/sync/pull?since=<unix>`：任务/日程/公告/墓碑仅回 UpdatedAt 大于 since 的变更项；账号与问答配置总是全量。客户端以 ClientLastSync 为 since，活动流水按 ClientActivitySync 游标增量推送（30s 重叠窗口 + ID 幂等去重）。
+- 聚合浏览（知识库/笔记本）服务端并发拉取各账号，单账号 15s/30s 超时，失败逐账号隔离。

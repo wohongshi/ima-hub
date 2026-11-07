@@ -451,6 +451,20 @@ function downloadZip(items) {
   });
 }
 
+/** 上传网络失败 → 转入离线队列（网络/ima 恢复后自动续传） */
+async function queueUploadFallback(file, fields) {
+  try {
+    await apiUploadTo('/api/queue/upload', file, {
+      ia: fields.ia === 'auto' ? '' : fields.ia,
+      kbId: fields.kbId,
+      folderId: fields.folderId,
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function openMediaDetail(mediaId, ia) {
   const m = showModal({
     title: '文件详情',
@@ -607,7 +621,7 @@ function openUploadModal(presetFiles) {
         if (!queue.length) { toast('请先选择要上传的文件', 'warn'); return; }
         const btn = $('#up-start', root);
         btn.disabled = true;
-        let ok = 0, fail = 0;
+        let ok = 0, fail = 0, queued = 0;
         const usedAccounts = [];
         const archiveFailures = [];
         for (let i = 0; i < queue.length; i++) {
@@ -656,15 +670,22 @@ function openUploadModal(presetFiles) {
                 }
               }
             }
-            itemEl.classList.add('fail');
-            status.textContent = '失败：' + (e.message || '上传失败');
-            status.className = 'up-status badge danger';
-            fail++;
+            if (e.code === -1 && await queueUploadFallback(queue[i], uploadFields(false))) {
+              status.textContent = '已排队，恢复后自动传';
+              status.className = 'up-status badge warn';
+              queued++;
+            } else {
+              itemEl.classList.add('fail');
+              status.textContent = '失败：' + (e.message || '上传失败');
+              status.className = 'up-status badge danger';
+              fail++;
+            }
           }
         }
         btn.disabled = false;
         toast('上传完成：成功 ' + ok + ' 个' + (fail ? '，失败 ' + fail + ' 个' : '') +
-          (usedAccounts.length ? '（存入：' + usedAccounts.join('、') + '）' : ''), fail ? 'warn' : 'success');
+          (queued ? '，排队 ' + queued + ' 个' : '') +
+          (usedAccounts.length ? '（存入：' + usedAccounts.join('、') + '）' : ''), (fail || queued) ? 'warn' : 'success');
         if (archiveFailures.length) {
           let rowsHtml = '';
           archiveFailures.forEach(function (af) {

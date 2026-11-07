@@ -26,7 +26,7 @@ import (
 const (
 	protocolVersion = "2025-06-18"
 	serverName      = "imahub"
-	serverVersion   = "0.1.1"
+	serverVersion   = "0.3.0"
 )
 
 type Server struct {

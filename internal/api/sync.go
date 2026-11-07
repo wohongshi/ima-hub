@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"imahub/internal/store"
@@ -36,7 +37,9 @@ func (s *Server) handleSyncPush(w http.ResponseWriter, r *http.Request, u *store
 }
 
 // handleSyncPull 客户端拉取团队数据：任务/日程/公告 + 分发 key + 问答模型配置。
+// 带 ?since=<unix> 时只回变更项（UpdatedAt 大于 since），账户/配置总是全量。
 func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request, u *store.User) {
+	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	all := s.Store.AllIMAAccounts()
 	keys := make([]map[string]any, 0, len(all))
 	for i := range all {
@@ -47,17 +50,43 @@ func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request, u *store
 		})
 	}
 	st := s.Store.GetSettings()
+
+	tasks := []store.Task{}
+	for _, t := range s.Store.ListTasks() {
+		if t.UpdatedAt > since {
+			tasks = append(tasks, t)
+		}
+	}
+	events := []store.Event{}
+	for _, e := range s.Store.ListEvents() {
+		if e.UpdatedAt > since {
+			events = append(events, e)
+		}
+	}
+	anns := []store.Announcement{}
+	for _, a := range s.Store.ListAnnouncements(50) {
+		if a.UpdatedAt > since {
+			anns = append(anns, a)
+		}
+	}
+	tombs := map[string]int64{}
+	for k, ts := range s.Store.TombstonesCopy() {
+		if ts > since {
+			tombs[k] = ts
+		}
+	}
+
 	writeOK(w, map[string]any{
-		"tasks":         s.Store.ListTasks(),
-		"events":        s.Store.ListEvents(),
-		"announcements": s.Store.ListAnnouncements(50),
+		"tasks":         tasks,
+		"events":        events,
+		"announcements": anns,
 		"accounts":      keys,
 		"settings": map[string]any{
 			"ask_base_url": st.AskBaseURL,
 			"ask_api_key":  st.AskAPIKey,
 			"ask_model":    st.AskModel,
 		},
-		"tombstones":  s.Store.TombstonesCopy(),
+		"tombstones":  tombs,
 		"server_time": time.Now().Unix(),
 	})
 }

@@ -12,6 +12,7 @@ async function renderSettingsView(root) {
     '  <div class="card" id="set-ima"></div>' +
     '  <div class="card" id="set-ask"></div>' +
     '  <div class="card" id="set-mcp"></div>' +
+    '  <div class="card" id="set-queue"></div>' +
     '</div>';
 
   // 账号信息
@@ -61,6 +62,73 @@ async function renderSettingsView(root) {
   if (isClientMode()) renderServerCard(root);
   renderAskCard(root);
   renderMcpCard(root);
+  renderQueueCard(root);
+}
+
+/* ============ 上传队列（离线排队，恢复后自动续传） ============ */
+async function renderQueueCard(root) {
+  const box = $('#set-queue', root);
+  if (!box) return;
+  box.innerHTML =
+    '<div class="card-head">' + icon('upload', 18) + '<h3>上传队列</h3><span class="sub">离线排队，恢复自动传</span></div>' +
+    '<div class="card-body"><div class="loading-center"><div class="spinner"></div></div></div>';
+  let data = {};
+  try {
+    data = await apiGet('/api/queue', { silent: true });
+  } catch (e) {
+    $('.card-body', box).innerHTML = '<div class="hint">队列加载失败</div>';
+    return;
+  }
+  const items = data.items || [];
+  const body = $('.card-body', box);
+  if (!items.length) {
+    body.innerHTML = '<div class="hint">队列为空</div>';
+    return;
+  }
+  body.innerHTML =
+    '<div class="queue-list">' +
+    items.map(function (it) {
+      const st = it.status === 'failed'
+        ? '<span class="badge danger">失败</span>'
+        : '<span class="badge warn">待传</span>';
+      return '<div class="queue-item" data-id="' + escapeHtml(it.id) + '">' +
+        '<div class="queue-item-main"><div class="queue-item-name">' + escapeHtml(it.name) + '</div>' +
+        '<div class="muted">' + (it.size ? humanSize(it.size) + ' · ' : '') +
+        (it.error ? escapeHtml(it.error) : '等待续传') + '</div></div>' +
+        st +
+        '<button class="btn sm" data-retry>重试</button>' +
+        '<button class="btn sm danger" data-del>删除</button>' +
+        '</div>';
+    }).join('') +
+    '</div>' +
+    '<div style="margin-top:10px"><button class="btn primary sm" id="queue-drain">' + icon('refresh', 14) + '全部续传</button></div>';
+  $$('.queue-item', box).forEach(function (el) {
+    const id = el.getAttribute('data-id');
+    const retry = $('[data-retry]', el);
+    const del = $('[data-del]', el);
+    retry.addEventListener('click', async function () {
+      retry.disabled = true;
+      try {
+        await apiPost('/api/queue/' + encodeURIComponent(id) + '/retry', {});
+        await renderQueueCard(root);
+      } catch (e) { retry.disabled = false; }
+    });
+    del.addEventListener('click', async function () {
+      try {
+        await apiDel('/api/queue/' + encodeURIComponent(id));
+        await renderQueueCard(root);
+      } catch (e) { /* api 已提示 */ }
+    });
+  });
+  const drain = $('#queue-drain', box);
+  drain.addEventListener('click', async function () {
+    drain.disabled = true;
+    try {
+      const r = await apiPost('/api/queue/drain', {});
+      toast('续传 ' + (r.sent || 0) + ' 个', 'success');
+      await renderQueueCard(root);
+    } catch (e) { drain.disabled = false; }
+  });
 }
 
 /* ============ 服务端（客户端模式） ============ */
