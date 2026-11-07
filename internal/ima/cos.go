@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// cosHTTPClient COS 上传专用客户端（10 分钟兜底超时，防无 deadline 挂死）。
+var cosHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+
 // cosUpload 复刻官方 cos-upload.cjs：COS PUT Object + q-sign-algorithm=sha1 签名。
 // 参考 https://cloud.tencent.com/document/product/436/7778
 func cosUpload(ctx context.Context, cred Credential, contentType string, r io.Reader, size int64) error {
@@ -60,7 +63,8 @@ func cosUpload(ctx context.Context, cred Credential, contentType string, r io.Re
 	req.Header.Set("Authorization", authorization)
 	req.Header.Set("x-cos-security-token", cred.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	// 带超时的客户端：调用方 ctx 之外兜底，防无 deadline 时挂死
+	resp, err := cosHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

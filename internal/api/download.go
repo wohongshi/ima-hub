@@ -3,9 +3,11 @@ package api
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,6 +48,9 @@ func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request, u *st
 	targets := []target{}
 	if len(req.Items) > 0 {
 		for _, it := range req.Items {
+			if len(targets) >= maxFiles {
+				break
+			}
 			if it.MediaID != "" {
 				targets = append(targets, target{it.MediaID, it.Title})
 			}
@@ -107,14 +112,20 @@ func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request, u *st
 
 	used := map[string]int{}
 	var total int64
+	var limitHit bool
 	for _, t := range targets {
 		if total > maxTotal {
+			limitHit = true
 			break
 		}
 		name := strings.TrimSpace(t.title)
 		if name == "" {
 			name = t.mediaID
 		}
+		// 条目名净化：标题来自共享数据，防 zip 内路径穿越（/ \ ..）
+		name = strings.ReplaceAll(name, "\\", "_")
+		name = strings.ReplaceAll(name, "/", "_")
+		name = strings.ReplaceAll(name, "..", "_")
 		// zip 内重名去重
 		used[name]++
 		if used[name] > 1 {
@@ -125,6 +136,11 @@ func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request, u *st
 			if f, zerr := zw.Create("[失败] " + name + ".txt"); zerr == nil {
 				fmt.Fprintf(f, "下载失败：%s", err)
 			}
+		}
+	}
+	if limitHit {
+		if f, zerr := zw.Create("[说明] 已达打包上限.txt"); zerr == nil {
+			fmt.Fprintf(f, "打包总量达到 %dMB 上限，剩余条目未包含。", maxTotal>>20)
 		}
 	}
 }
@@ -141,13 +157,13 @@ func (s *Server) writeZipEntry(zw *zip.Writer, c *ima.Client, ctx context.Contex
 		if err != nil {
 			return err
 		}
-		f, err := zw.Create(strings.TrimSuffix(name, "") + ".txt")
+		f, err := zw.Create(strings.TrimSuffix(name, filepath.Ext(name)) + ".txt")
 		if err != nil {
 			return err
 		}
-		n, _ := io.WriteString(f, content)
+		n, err := io.WriteString(f, content)
 		*total += int64(n)
-		return nil
+		return err
 	}
 	body, _, err := c.FetchMedia(ctx, info)
 	if err != nil {
@@ -158,8 +174,16 @@ func (s *Server) writeZipEntry(zw *zip.Writer, c *ima.Client, ctx context.Contex
 	if err != nil {
 		return err
 	}
-	n, _ := io.Copy(f, io.LimitReader(body, maxPerFile))
+	n, err := io.Copy(f, io.LimitReader(body, maxPerFile))
 	*total += n
+	if err != nil {
+		return err
+	}
+	// 探测是否被单文件上限静默截断
+	var probe [1]byte
+	if m, _ := body.Read(probe[:]); m > 0 {
+		return fmt.Errorf("文件超过 %dMB 上限，已截断", maxPerFile>>20)
+	}
 	return nil
 }
 
@@ -209,7 +233,11 @@ func (s *Server) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request
 		return nil
 	})
 	if err != nil {
-		writeErr(w, http.StatusNotFound, 404, "公告不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, 404, "公告不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	writeOK(w, nil)
@@ -218,7 +246,11 @@ func (s *Server) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request
 func (s *Server) handleDeleteAnnouncement(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
 	if err := s.Store.DeleteAnnouncement(id); err != nil {
-		writeErr(w, http.StatusNotFound, 404, "公告不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, 404, "公告不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	writeOK(w, nil)

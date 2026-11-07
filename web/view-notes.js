@@ -146,7 +146,8 @@ async function loadNotes(reset) {
       const page = pickPage(data);
       const name = notesState.notebook.account_name || '';
       notesState.notes = notesState.notes.concat(page.items.map(function (t) { return tagIa(t, notesState.nbIa, name); }));
-      notesState.isEnd = page.isEnd;
+      // 无游标 = 无法续页：视为最后一页，避免「加载更多」重复拉第一页
+      notesState.isEnd = page.isEnd || !page.nextCursor;
       notesState.cursor = page.nextCursor;
     } else {
       if (reset) {
@@ -170,7 +171,7 @@ async function loadNotes(reset) {
         const page = pickPage(data);
         notesState.notes = notesState.notes.concat(page.items.map(function (t) { return tagIa(t, s.ia, s.account_name); }));
         s.cursor = page.nextCursor;
-        s.isEnd = page.isEnd;
+        s.isEnd = page.isEnd || !page.nextCursor; // 无游标视为到底，防止重复拉第一页
       });
       notesState.isEnd = !notesState.allSources.length ||
         notesState.allSources.every(function (s) { return s.isEnd; });
@@ -187,6 +188,8 @@ function renderNotesList() {
   const box = $('#notes-list');
   if (!box) return;
   const countEl = $('#notes-count');
+  const backBtn = $('#note-search-back');
+  if (backBtn) backBtn.classList.toggle('hidden', !notesState.searchMode); // 搜索结果态显示「返回列表」
   const list = notesState.searchMode ? notesState.searchResults : notesState.notes;
 
   if (notesState.loading && !notesState.notes.length && !notesState.searchMode) {
@@ -235,15 +238,20 @@ function renderNotesList() {
 }
 
 /* ============ 阅读 ============ */
+let noteOpenSeq = 0; // 请求代数：快速连点两篇笔记时丢弃过期响应
+
 async function openNote(noteId, title, ia) {
+  const seq = ++noteOpenSeq;
   notesState.currentNote = { id: String(noteId), title: title || '笔记', content: '', ia: ia || '' };
   renderNoteViewer();
   renderNotesList();
   try {
     const data = await apiGet(qs('/api/ima/note', { note_id: noteId, ia: ia || '' }));
+    if (seq !== noteOpenSeq || !notesState.currentNote) return; // 已切换/已关闭，丢弃
     notesState.currentNote.content = data && data.content !== undefined ? data.content : '';
     renderNoteViewer();
   } catch (e) {
+    if (seq !== noteOpenSeq || !notesState.currentNote) return;
     notesState.currentNote.content = '（内容加载失败：' + (e.message || '未知错误') + '）';
     renderNoteViewer();
   }

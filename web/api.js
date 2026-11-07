@@ -101,6 +101,7 @@ function apiUpload(file, fields, onProgress) {
       if (!json || json.code !== 0) {
         const msg = (json && json.msg) ? json.msg : ('上传失败（HTTP ' + xhr.status + '）');
         const err = new ApiError(msg, json ? json.code : -1, xhr.status === 401);
+        if (err.unauthorized && typeof onUnauthorized === 'function') onUnauthorized();
         reject(err);
         return;
       }
@@ -115,6 +116,7 @@ function apiUpload(file, fields, onProgress) {
     if (fields.folderId) fd.append('folder_id', fields.folderId);
     if (fields.force) fd.append('force', '1');
     if (fields.ia) fd.append('ia', fields.ia);
+    xhr.timeout = 1800000; // 30 分钟兜底，配合 ontimeout 避免上传永久挂起
     xhr.send(fd);
   });
 }

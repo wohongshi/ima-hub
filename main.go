@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"io/fs"
@@ -10,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"imahub/internal/api"
 	"imahub/internal/mcp"
@@ -49,11 +52,14 @@ func main() {
 		ImaBaseURL: *imaBase,
 		TmpDir:     srv.TmpDir,
 	}
-	_ = os.MkdirAll(srv.TmpDir, 0o755)
+	if err := os.MkdirAll(srv.TmpDir, 0o755); err != nil {
+		log.Fatalf("创建临时目录失败: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())
 	mux.Handle("/mcp", srv.MCP)
+	mux.Handle("/mcp/", srv.MCP) // 带尾斜杠别落到 SPA
 	mux.Handle("/healthz", srv.Handler())
 
 	// 静态 WebUI（内嵌），SPA 回退到 index.html
@@ -64,10 +70,19 @@ func main() {
 	fileServer := http.FileServer(http.FS(sub))
 	mux.Handle("/", spaHandler(sub, fileServer))
 
-	httpSrv := &http.Server{Addr: *addr, Handler: mux}
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
-		log.Printf("ImaHub v%s 已启动: http://localhost%s  (数据目录 %s)", api.Version, *addr, *dataDir)
+		display := *addr
+		if strings.HasPrefix(display, ":") {
+			display = "localhost" + display
+		}
+		log.Printf("ImaHub v%s 已启动: http://%s  (数据目录 %s)", api.Version, display, *dataDir)
 		if st.UserCount() == 0 {
 			log.Printf("首次使用：打开页面完成管理员初始化")
 		}
@@ -80,7 +95,11 @@ func main() {
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
 	log.Println("正在退出…")
-	_ = httpSrv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("优雅退出未完成（强制关闭）: %v", err)
+	}
 }
 
 // spaHandler 静态资源优先；未命中的路径回退 index.html。
@@ -88,7 +107,8 @@ func spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if p != "/" {
-			if _, err := fs.Stat(sub, filepath.Clean(strings.TrimPrefix(p, "/"))); err != nil {
+			// fs.FS 路径恒为斜杠分隔，用 path.Clean（filepath 在 Windows 上会转反斜杠导致永远查不到）
+			if _, err := fs.Stat(sub, path.Clean(strings.TrimPrefix(p, "/"))); err != nil {
 				r2 := r.Clone(r.Context())
 				r2.URL.Path = "/"
 				fileServer.ServeHTTP(w, r2)

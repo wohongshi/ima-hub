@@ -17,9 +17,9 @@ import (
 // 压缩包自动解压上传支持：zip / 7z / rar。
 
 const (
-	MaxArchiveFiles = 5000        // 解压文件数上限
-	MaxArchiveTotal = 2 << 30     // 解压总大小上限 2GB
-	maxArchiveSelf  = 500 << 20   // 压缩包本身大小上限 500MB
+	MaxArchiveFiles = 5000      // 解压文件数上限
+	MaxArchiveTotal = 2 << 30   // 解压总大小上限 2GB
+	maxArchiveSelf  = 500 << 20 // 压缩包本身大小上限 500MB
 )
 
 // IsArchive 是否为支持自动解压的压缩包。
@@ -124,7 +124,7 @@ func (c *extractCounter) add(rel, abs string, size int64) error {
 	return nil
 }
 
-func writeEntry(destDir, rel string, r io.Reader) (int64, error) {
+func writeEntry(destDir, rel string, r io.Reader, budget int64) (int64, error) {
 	abs := filepath.Join(destDir, filepath.FromSlash(rel))
 	if !strings.HasPrefix(abs, filepath.Clean(destDir)+string(os.PathSeparator)) {
 		return 0, errors.New("非法路径：" + rel)
@@ -137,11 +137,13 @@ func writeEntry(destDir, rel string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 	defer f.Close()
-	// 单文件也受解压总量约束（限制读取防止炸弹）
-	remain := int64(MaxArchiveTotal)
-	n, err := io.Copy(f, io.LimitReader(r, remain))
+	// 受剩余解压预算约束，写入过程中即拦截（防单条目先写满盘再被拒）
+	n, err := io.Copy(f, io.LimitReader(r, budget+1))
 	if err != nil {
 		return n, err
+	}
+	if n > budget {
+		return n, fmt.Errorf("解压总大小超过上限（%dGB）", MaxArchiveTotal>>30)
 	}
 	return n, nil
 }
@@ -162,7 +164,7 @@ func extractZip(archivePath, destDir string) ([]ExtractedFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取 %s 失败: %w", f.Name, err)
 		}
-		n, err := writeEntry(destDir, rel, rc)
+		n, err := writeEntry(destDir, rel, rc, MaxArchiveTotal-c.bytes)
 		rc.Close()
 		if err != nil {
 			return nil, err
@@ -190,7 +192,7 @@ func extract7z(archivePath, destDir string) ([]ExtractedFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取 %s 失败: %w", f.Name, err)
 		}
-		n, err := writeEntry(destDir, rel, rc)
+		n, err := writeEntry(destDir, rel, rc, MaxArchiveTotal-c.bytes)
 		rc.Close()
 		if err != nil {
 			return nil, err
@@ -225,7 +227,7 @@ func extractRar(archivePath, destDir string) ([]ExtractedFile, error) {
 		if !ok || hdr.IsDir {
 			continue
 		}
-		n, err := writeEntry(destDir, rel, rr)
+		n, err := writeEntry(destDir, rel, rr, MaxArchiveTotal-c.bytes)
 		if err != nil {
 			return nil, err
 		}

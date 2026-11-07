@@ -64,7 +64,14 @@ func Run(ctx context.Context, accs []Account, question string, opt Options) (Res
 		opt.MaxCtx = 800
 	}
 
-	sources := retrieve(ctx, accs, question, opt)
+	sources, errs := retrieve(ctx, accs, question, opt)
+	if len(sources) == 0 && len(errs) > 0 {
+		// 后端全挂（凭证失效/网络故障）时如实报错，不给空答案
+		return Result{}, errors2("知识库检索失败：" + strings.Join(errs, "；"))
+	}
+	if len(sources) > opt.TopK {
+		sources = sources[:opt.TopK]
+	}
 	res := Result{Sources: sources, Mode: "retrieval"}
 	if opt.BaseURL == "" || opt.Model == "" {
 		return res, nil
@@ -80,19 +87,21 @@ func Run(ctx context.Context, accs []Account, question string, opt Options) (Res
 }
 
 type kbRef struct {
-	acc  Account
-	kbID string
+	acc    Account
+	kbID   string
 	kbName string
 }
 
-// retrieve 跨账号跨知识库检索（search_knowledge 全文匹配）。
-func retrieve(ctx context.Context, accs []Account, question string, opt Options) []Source {
+// retrieve 跨账号跨知识库检索（search_knowledge 全文匹配），失败逐路收集不静默。
+func retrieve(ctx context.Context, accs []Account, question string, opt Options) ([]Source, []string) {
 	seen := map[string]bool{}
 	out := []Source{}
+	errs := []string{}
 	// 先收集知识库（每个账号最多 50 个）
 	for _, acc := range accs {
 		kbs, err := acc.Client.SearchKnowledgeBase(ctx, "", "", 50)
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("账号「%s」知识库列表失败：%v", acc.Name, err))
 			continue
 		}
 		for _, kb := range kbs.InfoList {
@@ -101,6 +110,7 @@ func retrieve(ctx context.Context, accs []Account, question string, opt Options)
 			}
 			rsp, err := acc.Client.SearchKnowledge(ctx, kb.ID, question, "")
 			if err != nil {
+				errs = append(errs, fmt.Sprintf("知识库「%s」检索失败：%v", kb.Name, err))
 				continue
 			}
 			for _, hit := range rsp.InfoList {
@@ -115,12 +125,12 @@ func retrieve(ctx context.Context, accs []Account, question string, opt Options)
 					Snippet: cleanHighlight(hit.HighlightContent),
 				})
 				if len(out) >= opt.TopK*2 {
-					return out
+					return out, errs
 				}
 			}
 		}
 	}
-	return out
+	return out, errs
 }
 
 func cleanHighlight(s string) string {

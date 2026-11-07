@@ -12,10 +12,10 @@ import (
 // body: {q, kb_id?, top_k?, ia?}  ia 限定单账号（空=全部团队账号）。
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request, u *store.User) {
 	var req struct {
-		Q     string `json:"q"`
-		KBID  string `json:"kb_id"`
-		TopK  int    `json:"top_k"`
-		IA    string `json:"ia"`
+		Q    string `json:"q"`
+		KBID string `json:"kb_id"`
+		TopK int    `json:"top_k"`
+		IA   string `json:"ia"`
 	}
 	if !decodeBody(w, r, &req) {
 		return

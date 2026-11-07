@@ -155,12 +155,12 @@ type KnowledgeInfo struct {
 }
 
 type FolderInfo struct {
-	FolderID       string   `json:"folder_id"`
-	Name           string   `json:"name"`
-	FileNumber     FlexInt  `json:"file_number"`
-	FolderNumber   FlexInt  `json:"folder_number"`
-	ParentFolderID string   `json:"parent_folder_id"`
-	IsTop          bool     `json:"is_top"`
+	FolderID       string  `json:"folder_id"`
+	Name           string  `json:"name"`
+	FileNumber     FlexInt `json:"file_number"`
+	FolderNumber   FlexInt `json:"folder_number"`
+	ParentFolderID string  `json:"parent_folder_id"`
+	IsTop          bool    `json:"is_top"`
 }
 
 type SearchedKB struct {
@@ -211,16 +211,16 @@ type MediaInfo struct {
 }
 
 type Credential struct {
-	Token        string `json:"token"`
-	SecretID     string `json:"secret_id"`
-	SecretKey    string `json:"secret_key"`
+	Token        string  `json:"token"`
+	SecretID     string  `json:"secret_id"`
+	SecretKey    string  `json:"secret_key"`
 	StartTime    FlexInt `json:"start_time"`
 	ExpiredTime  FlexInt `json:"expired_time"`
-	AppID        string `json:"appid"`
-	BucketName   string `json:"bucket_name"`
-	Region       string `json:"region"`
-	CustomDomain string `json:"custom_domain"`
-	CosKey       string `json:"cos_key"`
+	AppID        string  `json:"appid"`
+	BucketName   string  `json:"bucket_name"`
+	Region       string  `json:"region"`
+	CustomDomain string  `json:"custom_domain"`
+	CosKey       string  `json:"cos_key"`
 }
 
 type FileInfo struct {
@@ -540,12 +540,12 @@ func (c *Client) UploadFile(ctx context.Context, kbID, folderID, filename string
 // ---------- 笔记 note API ----------
 
 type NoteInfo struct {
-	NoteID     string `json:"note_id"`
-	Title      string `json:"title"`
-	Summary    string `json:"summary"`
+	NoteID     string  `json:"note_id"`
+	Title      string  `json:"title"`
+	Summary    string  `json:"summary"`
 	CreateTime FlexInt `json:"create_time"`
 	ModifyTime FlexInt `json:"modify_time"`
-	CoverImage string `json:"cover_image"`
+	CoverImage string  `json:"cover_image"`
 	NoteExt    *struct {
 		FolderID   string `json:"folder_id"`
 		FolderName string `json:"folder_name"`
@@ -553,12 +553,12 @@ type NoteInfo struct {
 }
 
 type NoteFolderInfo struct {
-	FolderID       string `json:"folder_id"`
-	Name           string `json:"name"`
-	CreateTime     int64  `json:"create_time"`
-	ModifyTime     int64  `json:"modify_time"`
+	FolderID       string  `json:"folder_id"`
+	Name           string  `json:"name"`
+	CreateTime     FlexInt `json:"create_time"`
+	ModifyTime     FlexInt `json:"modify_time"`
 	NoteNumber     FlexInt `json:"note_number"`
-	ParentFolderID string `json:"parent_folder_id"`
+	ParentFolderID string  `json:"parent_folder_id"`
 	FolderType     FlexInt `json:"folder_type"`
 }
 
@@ -567,7 +567,7 @@ type SearchNoteRsp struct {
 		NoteBookInfo NoteInfo          `json:"note_book_info"`
 		Highlight    map[string]string `json:"highlightInfo"`
 	} `json:"search_note_infos"`
-	IsEnd    bool  `json:"is_end"`
+	IsEnd    bool    `json:"is_end"`
 	TotalHit FlexInt `json:"total_hit_num"`
 }
 
@@ -596,6 +596,7 @@ func (c *Client) SearchNote(ctx context.Context, title, content string, searchTy
 type ListNoteRsp struct {
 	NoteBookList []NoteInfo `json:"note_book_list"`
 	IsEnd        bool       `json:"is_end"`
+	NextCursor   string     `json:"next_cursor"`
 }
 
 func (c *Client) ListNote(ctx context.Context, folderID, cursor string, limit uint64) (*ListNoteRsp, error) {

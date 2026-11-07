@@ -10,10 +10,10 @@ func TestVerifyPasswordRejectsMalformedHash(t *testing.T) {
 	salt := base64.RawStdEncoding.EncodeToString([]byte("0123456789abcdef"))
 	short := base64.RawStdEncoding.EncodeToString([]byte("tiny"))
 	for _, enc := range []string{
-		"pbkdf2$120000$" + salt + "$",     // 空哈希
+		"pbkdf2$120000$" + salt + "$",         // 空哈希
 		"pbkdf2$120000$" + salt + "$" + short, // 过短哈希
-		"pbkdf2$120000$$",                 // 空盐空哈希
-		"pbkdf2$0$" + salt + "$" + short,  // 非法迭代数
+		"pbkdf2$120000$$",                     // 空盐空哈希
+		"pbkdf2$0$" + salt + "$" + short,      // 非法迭代数
 		"not-a-hash",
 		"",
 	} {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -102,9 +103,9 @@ func ValidateUsername(name string) error {
 	return nil
 }
 
-// ValidatePassword 口令至少 6 位。
+// ValidatePassword 口令至少 6 位（按字符计，中文算一位）。
 func ValidatePassword(pw string) error {
-	if len(pw) < 6 {
+	if utf8.RuneCountInString(pw) < 6 {
 		return errors.New("密码至少 6 位")
 	}
 	return nil

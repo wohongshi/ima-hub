@@ -4,6 +4,7 @@ package scan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,9 +215,12 @@ func (s *Scanner) run() {
 		st.KBs = len(kbs.InfoList)
 		accTypes := map[string]int{}
 		for _, kb := range kbs.InfoList {
-			files, folders := s.walkKB(ctx, acc.Client, kb.ID, kb.Name, acc, accTypes, &newFiles, firstSeen, now)
+			files, folders, werr := s.walkKB(ctx, acc.Client, kb.ID, kb.Name, acc, accTypes, &newFiles, firstSeen, now)
 			st.Files += files
 			st.Folders += folders
+			if werr != nil && st.Error == "" {
+				st.Error = werr.Error()
+			}
 		}
 		st.Types = accTypes
 		for t, c := range accTypes {
@@ -290,11 +294,12 @@ func (s *Scanner) persist() {
 	}
 }
 
-// walkKB 递归遍历一个知识库，返回 (files, folders)。
+// walkKB 递归遍历一个知识库，返回 (files, folders)；遍历中断的错误不吞掉。
 func (s *Scanner) walkKB(ctx context.Context, c *ima.Client, kbID, kbName string, acc scanAccount,
-	typeCount map[string]int, newFiles *[]NewFile, firstSeen map[string]int64, now int64) (int, int) {
+	typeCount map[string]int, newFiles *[]NewFile, firstSeen map[string]int64, now int64) (int, int, error) {
 
 	files, folders := 0, 0
+	var walkErr error
 	queue := []struct {
 		folder string
 		depth  int
@@ -311,6 +316,10 @@ func (s *Scanner) walkKB(ctx context.Context, c *ima.Client, kbID, kbName string
 		for page := 0; page < 100; page++ {
 			rsp, err := c.GetKnowledgeList(ctx, kbID, cur.folder, cursor, 50)
 			if err != nil {
+				// 记录首个遍历错误（统计会少算，必须让上层可见）
+				if walkErr == nil {
+					walkErr = fmt.Errorf("知识库「%s」遍历中断: %w", kbName, err)
+				}
 				break
 			}
 			for _, f := range rsp.Folders {
@@ -351,7 +360,7 @@ func (s *Scanner) walkKB(ctx context.Context, c *ima.Client, kbID, kbName string
 			cursor = rsp.NextCursor
 		}
 	}
-	return files, folders
+	return files, folders, walkErr
 }
 
 func (s *Scanner) knownBefore(mediaID string) bool {

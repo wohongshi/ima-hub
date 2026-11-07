@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -25,7 +26,7 @@ import (
 const (
 	protocolVersion = "2025-06-18"
 	serverName      = "imahub"
-	serverVersion   = "0.1.0"
+	serverVersion   = "0.1.1"
 )
 
 type Server struct {
@@ -233,7 +234,7 @@ func toolDefs() []toolDef {
 	arr := `{"type":"array","items":{"type":"string"}}`
 
 	return []toolDef{
-		{"ima_ask", "知识库智能问答：跨团队知识库检索并用内置模型合成回答，返回答案与引用来源", obj(`{"q":` + str + `,"kb_id":` + str + `,"top_k":` + num + `}`, "q")},
+		{"ima_ask", "知识库智能问答：跨团队知识库检索并用内置模型合成回答，返回答案与引用来源", obj(`{"q":`+str+`,"kb_id":`+str+`,"top_k":`+num+`}`, "q")},
 		{"ima_test", "测试 ima 开放平台凭证连通性", obj(`{}`)},
 		{"ima_search_knowledge_bases", "搜索或列出 ima 知识库（q 空为默认列表）", obj(`{"q":` + str + `,"cursor":` + str + `,"limit":` + num + `}`)},
 		{"ima_list_knowledge", "浏览知识库内容（可传 folder_id 进入文件夹），返回文件与文件夹", obj(`{"knowledge_base_id":`+str+`,"folder_id":`+str+`,"cursor":`+str+`,"limit":`+num+`}`, "knowledge_base_id")},
@@ -561,11 +562,15 @@ func (s *Server) downloadMedia(ctx context.Context, c *ima.Client, mediaID strin
 			"media_type":   info.MediaType,
 			"kind":         "binary",
 			"url":          info.URLInfo.URL,
-			"note":         fmt.Sprintf("二进制内容（约 %d 字节），请通过 url 下载", total+int64(n)),
+			"note":         fmt.Sprintf("二进制内容（约 %d 字节），请通过 url 下载", total),
 			"content_type": hdr.Get("Content-Type"),
 		}, nil
 	}
-	raw, _ := io.ReadAll(io.LimitReader(rest, downloadTextLimit))
+	raw, err := io.ReadAll(io.LimitReader(rest, downloadTextLimit))
+	if err != nil {
+		// 传输中断的半截内容不能冒充完整文本
+		return nil, fmt.Errorf("读取内容失败（可能传输中断）: %w", err)
+	}
 	truncated := false
 	var extra [1]byte
 	if m, _ := rest.Read(extra[:]); m > 0 {
@@ -580,6 +585,25 @@ func (s *Server) downloadMedia(ctx context.Context, c *ima.Client, mediaID strin
 }
 
 func looksLikeText(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	// 已知二进制魔数直接判二进制（PDF/图片/压缩包头部常无 NUL 字节）
+	magic := [][]byte{
+		{0x25, 0x50, 0x44, 0x46},             // %PDF
+		{0x89, 0x50, 0x4E, 0x47},             // PNG
+		{0xFF, 0xD8, 0xFF},                   // JPEG
+		{0x47, 0x49, 0x46, 0x38},             // GIF
+		{0x50, 0x4B, 0x03, 0x04},             // zip / docx / xlsx / epub
+		{0x1F, 0x8B},                         // gzip
+		{0x52, 0x61, 0x72, 0x21},             // rar
+		{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}, // 7z
+	}
+	for _, m := range magic {
+		if len(b) >= len(m) && bytes.Equal(b[:len(m)], m) {
+			return false
+		}
+	}
 	for _, c := range b {
 		if c == 0 {
 			return false
@@ -641,13 +665,17 @@ func (s *Server) uploadFile(ctx context.Context, c *ima.Client, args map[string]
 		reader = f
 		cleanup = func() { f.Close() }
 	} else if b64 := str("content_base64"); b64 != "" {
-		raw, err := base64.StdEncoding.DecodeString(b64)
+		clean := strings.ReplaceAll(b64, "\n", "")
+		raw, err := base64.StdEncoding.DecodeString(clean)
 		if err != nil {
-			// 兼容 URL-safe 与带换行
-			raw, err = base64.RawStdEncoding.DecodeString(strings.ReplaceAll(b64, "\n", ""))
-			if err != nil {
-				return nil, errors.New("content_base64 解码失败")
-			}
+			raw, err = base64.RawStdEncoding.DecodeString(clean)
+		}
+		if err != nil {
+			// 真正兼容 URL-safe（-_ 字符表）
+			raw, err = base64.RawURLEncoding.DecodeString(clean)
+		}
+		if err != nil {
+			return nil, errors.New("content_base64 解码失败")
 		}
 		tmp, err := os.CreateTemp(s.TmpDir, "mcpup-*")
 		if err != nil {

@@ -11,6 +11,8 @@ const filesState = {
   selected: {},            // 多选：media_id -> {media_id,title}
   searchMode: false, searchQuery: '',
   searchItems: [], searchCursor: null, searchEnd: true, searchLoading: false,
+  listPending: false, kbPending: false, // 在途请求期间的新导航/搜索，完成后补跑
+  pendingImport: false,                 // 首页「导入链接」跳转后待弹导入框
 };
 
 function renderFilesView(root) {
@@ -45,11 +47,19 @@ function renderFilesView(root) {
   renderKbList();
   renderFilesBody();
   if (!filesState.kbs.length && !filesState.kbLoading) loadKbs(true);
+  // 首页「导入链接」挂起请求：知识库已就绪则在此弹出，否则等 selectKb
+  if (filesState.pendingImport && filesState.kb) {
+    filesState.pendingImport = false;
+    openImportModal();
+  }
 }
 
 /* ============ 知识库列表 ============ */
 async function loadKbs(reset) {
-  if (filesState.kbLoading) return;
+  if (filesState.kbLoading) {
+    if (reset) filesState.kbPending = true; // 在途期间的新查询/刷新置位，完成后补跑
+    return;
+  }
   filesState.kbLoading = true;
   if (reset) { filesState.kbs = []; filesState.kbCursor = null; filesState.kbEnd = true; }
   renderKbList();
@@ -63,11 +73,19 @@ async function loadKbs(reset) {
     filesState.kbCursor = page.nextCursor;
     if (reset) filesState.kbErrors = (data && data.errors) || [];
   } catch (e) {
-    if (e.unauthorized) return;
+    if (e.unauthorized) {
+      filesState.kbPending = false; // 跳登录后不再补跑
+      return;
+    }
     // 静默失败，列表显示重试
+  } finally {
+    filesState.kbLoading = false;
+    renderKbList();
+    if (filesState.kbPending) {
+      filesState.kbPending = false;
+      loadKbs(true); // 补跑在途期间被吞掉的最新查询/刷新
+    }
   }
-  filesState.kbLoading = false;
-  renderKbList();
 }
 
 function renderKbList() {
@@ -126,12 +144,18 @@ function selectKb(kb) {
   filesState.kbIa = String(kb.ia || '');
   filesState.folder = String(kb.id);
   filesState.path = [];
+  filesState.selected = {}; // 切库即清空多选，避免批量条带上旧库 media_id
   filesState.searchMode = false;
   filesState.searchQuery = '';
   const q = $('#file-q');
   if (q) q.value = '';
   loadList(true);
   renderKbList();
+  // 首页「导入链接」挂起请求：知识库刚就绪，弹出导入框
+  if (filesState.pendingImport) {
+    filesState.pendingImport = false;
+    openImportModal();
+  }
 }
 
 /* ============ 目录列表 ============ */
@@ -140,25 +164,36 @@ async function loadList(reset) {
     renderFilesBody();
     return;
   }
-  if (filesState.loading) return;
+  if (filesState.loading) {
+    if (reset) filesState.listPending = true; // 在途期间的目录切换/刷新置位，完成后补跑
+    return;
+  }
   filesState.loading = true;
   if (reset) { filesState.items = []; filesState.cursor = null; filesState.isEnd = true; }
   renderFilesBody();
+  // 请求快照：响应返回时校验，期间切过目录/知识库就丢弃过期结果
+  const reqKb = filesState.kb, reqFolder = filesState.folder;
   try {
     const data = await apiGet(qs('/api/ima/list', {
       kb: filesState.kb.id, folder: filesState.folder || filesState.kb.id,
       ia: filesState.kbIa,
       cursor: reset ? '' : filesState.cursor, limit: 50,
     }));
-    const page = pickPage(data);
-    filesState.items = filesState.items.concat(page.items);
-    filesState.isEnd = page.isEnd;
-    filesState.cursor = page.nextCursor;
-    if (reset && data && Array.isArray(data.current_path)) filesState.path = data.current_path;
+    if (reqKb === filesState.kb && reqFolder === filesState.folder) {
+      const page = pickPage(data);
+      filesState.items = filesState.items.concat(page.items);
+      filesState.isEnd = page.isEnd;
+      filesState.cursor = page.nextCursor;
+      if (reset && data && Array.isArray(data.current_path)) filesState.path = data.current_path;
+    }
   } catch (e) { /* toast 由 api 层处理 */ }
   filesState.loading = false;
   renderCrumbs();
   renderFilesBody();
+  if (filesState.listPending) {
+    filesState.listPending = false;
+    loadList(true); // 补跑在途期间被丢弃的目录切换/刷新
+  }
 }
 
 function pathEntryId(f) {
@@ -281,7 +316,6 @@ function renderFilesBody() {
       renderFilesBody();
     });
     if (it.is_folder) {
-      openEl.addEventListener('dblclick', function () { enterFolder(it); });
       openEl.addEventListener('click', function () { enterFolder(it); });
     } else {
       openEl.addEventListener('click', function () { openMediaDetail(itemId(it), filesState.kbIa); });
@@ -301,7 +335,9 @@ function renderFilesBody() {
 }
 
 function enterFolder(it) {
-  filesState.folder = String(it.folder_id !== undefined ? it.folder_id : itemId(it));
+  const id = String(it.folder_id !== undefined ? it.folder_id : itemId(it));
+  if (id === String(filesState.folder)) return; // 双击/重复点击同一层，不重复入栈
+  filesState.folder = id;
   const p = filesState.path.slice();
   p.push({ id: filesState.folder, name: itemTitle(it) });
   filesState.path = p;
@@ -430,17 +466,11 @@ function openMediaDetail(mediaId, ia) {
     const mt = data.media_type;
     let html = '<dl class="dl">';
     html += '<dt>类型</dt><dd><span class="badge">' + escapeHtml(String(mt) + (typeMap[mt] ? ' · ' + typeMap[mt] : '')) + '</span></dd>';
-    if (data.title) html += '<dt>标题</dt><dd>' + escapeHtml(data.title) + '</dd>';
     const ui = data.url_info;
     let url = '';
     if (typeof ui === 'string') url = ui;
-    else if (ui && typeof ui === 'object') url = ui.url || ui.download_url || ui.doc_url || '';
+    else if (ui && typeof ui === 'object') url = ui.url || '';
     if (url) html += '<dt>链接</dt><dd><a class="md-link mono" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer" style="font-size:12px">' + escapeHtml(url) + '</a></dd>';
-    if (data.notebook_ext_info) {
-      const nb = data.notebook_ext_info;
-      if (nb.name || nb.notebook_name) html += '<dt>笔记本</dt><dd>' + escapeHtml(nb.name || nb.notebook_name) + '</dd>';
-      if (nb.create_time || nb.created_at) html += '<dt>创建时间</dt><dd>' + escapeHtml(formatTime(nb.create_time || nb.created_at)) + '</dd>';
-    }
     html += '</dl>';
     // 在线预览：图片 / PDF / 文本类
     const previewKind = ({ 1: 'pdf', 9: 'image', 7: 'text', 13: 'text', 20: 'text' })[mt] || '';
@@ -488,13 +518,17 @@ function openUploadModal(presetFiles) {
       (filesState.kb && String(kb.id) === String(filesState.kb.id) ? ' selected' : '') + '>' +
       escapeHtml((kb.name || kb.id) + (kb.account_name ? '（' + kb.account_name + '）' : '')) + '</option>';
   }).join('');
+  const curFolder = filesState.folder && filesState.kb && String(filesState.folder) !== String(filesState.kb.id) ? String(filesState.folder) : '';
   const folders = filesState.items.filter(function (it) { return it.is_folder; });
   let folderOptions = '<option value="">根目录</option>';
+  if (curFolder) {
+    // 当前目录本身不在子目录列表里，必须显式暴露一项，才能命中下方预选
+    folderOptions += '<option value="' + escapeHtml(curFolder) + '">当前目录</option>';
+  }
   folders.forEach(function (f) {
     const id = f.folder_id !== undefined ? f.folder_id : itemId(f);
     folderOptions += '<option value="' + escapeHtml(id) + '">' + escapeHtml(itemTitle(f)) + '</option>';
   });
-  const curFolder = filesState.folder && filesState.kb && String(filesState.folder) !== String(filesState.kb.id) ? String(filesState.folder) : '';
 
   showModal({
     title: '上传文件到知识库',
@@ -685,8 +719,10 @@ function openImportModal() {
             urls: urls,
           });
           const results = data && data.results;
-          const okCount = Array.isArray(results) ? results.filter(function (r) { return r && (r.ok || r.success || r.code === 0); }).length : urls.length;
-          toast('导入完成：提交 ' + urls.length + ' 个链接' + (Array.isArray(results) ? '（成功 ' + okCount + ' 个）' : ''), 'success');
+          // 服务端 results 是 {url: {url, ret_code, media_id}} 形状的对象映射（非数组）
+          const list = results && typeof results === 'object' ? Object.values(results) : [];
+          const okCount = list.filter(function (r) { return r && r.ret_code === 0; }).length;
+          toast('导入完成：提交 ' + urls.length + ' 个链接' + (list.length ? '（成功 ' + okCount + ' 个）' : ''), 'success');
           close();
           loadList(true);
         } catch (e) {

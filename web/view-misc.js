@@ -83,8 +83,13 @@ async function renderAskCard(root) {
 
   let cfg = {};
   try {
-    cfg = await apiGet('/api/admin/settings', { silent: true });
-  } catch (e) { /* 次要 */ }
+    cfg = (await apiGet('/api/admin/settings', { silent: true })) || {};
+  } catch (e) {
+    // 加载失败必须停在错误态：空表单保存会把已配置的问答模型清空
+    body.innerHTML = emptyStateHtml('alert', '问答模型配置加载失败', e.message || '请稍后重试');
+    mountIcons(body);
+    return;
+  }
   body.innerHTML =
     '<div class="hint" style="margin:0 0 10px">配置 OpenAI 兼容端点后，首页问答 / MCP ima_ask 会自动检索团队知识库并合成回答（工具内置调用，不依赖外部 agent）。留空 API Key 表示不修改。</div>' +
     '<div class="form-row">' +
@@ -607,7 +612,7 @@ function renderAdminSettingsForm(box, s) {
       site_name: $('#as-site', box).value.trim(),
       allow_register: $('#as-register', box).checked,
       default_ima_client_id: $('#as-cid', box).value.trim(),
-      default_ima_api_key: $('#as-key', box).value, // 空字符串 = 不改
+      default_ima_api_key: $('#as-key', box).value.trim(), // 空字符串（含纯空白）= 不改
     };
     const btn = $('#as-save', box);
     btn.disabled = true;

@@ -99,6 +99,9 @@ function toast(msg, type, ttl) {
 }
 
 /* ============ 模态框 ============ */
+/** 打开中的模态栈（栈顶 = 最上层）：Escape 只关最上层，close() 统一解绑监听 */
+const modalStack = [];
+
 /**
  * @param {{title:string, body:string, footer?:string, wide?:boolean, xwide?:boolean, onMount?:(root:HTMLElement, close:()=>void)=>void, onClose?:()=>void}} opts
  */
@@ -119,29 +122,38 @@ function showModal(opts) {
   function close() {
     if (closed) return;
     closed = true;
+    document.removeEventListener('keydown', esc);
+    const i = modalStack.indexOf(mask);
+    if (i >= 0) modalStack.splice(i, 1);
     mask.remove();
     if (opts.onClose) opts.onClose();
+  }
+  function esc(e) {
+    if (e.key !== 'Escape') return;
+    if (modalStack[modalStack.length - 1] !== mask) return; // 叠加模态只关最上层
+    close();
   }
   mask.addEventListener('click', function (e) {
     if (e.target === mask) close();
   });
   $$('[data-close]', mask).forEach(function (b) { b.addEventListener('click', close); });
-  document.addEventListener('keydown', function esc(e) {
-    if (e.key === 'Escape' && !closed) { close(); }
-    if (closed) document.removeEventListener('keydown', esc);
-  });
+  modalStack.push(mask);
+  document.addEventListener('keydown', esc);
   if (opts.onMount) opts.onMount(mask, close);
   return { close: close, root: mask };
 }
 
-/** 确认弹窗 → Promise<boolean> */
-function confirmDialog(message, opts) {
+/**
+ * 确认弹窗 → Promise<boolean>
+ * @param {string} messageHtml 消息片段，按 HTML 渲染 —— 转义由调用方负责
+ */
+function confirmDialog(messageHtml, opts) {
   opts = opts || {};
   return new Promise(function (resolve) {
     let settled = false;
     const m = showModal({
       title: opts.title || '确认操作',
-      body: '<div style="font-size:13.5px;line-height:1.8;color:var(--text-2)">' + message + '</div>',
+      body: '<div style="font-size:13.5px;line-height:1.8;color:var(--text-2)">' + messageHtml + '</div>',
       footer:
         '<button class="btn" data-no>取消</button>' +
         '<button class="btn ' + (opts.danger ? 'danger' : 'primary') + '" data-yes>' + escapeHtml(opts.okText || '确认') + '</button>',
@@ -236,20 +248,28 @@ function pickList(data) {
 }
 
 function pickPage(data) {
+  let isEnd = true;
+  let nextCursor = null;
+  if (data) {
+    if (data.is_end !== undefined) isEnd = !!data.is_end;
+    if (data.next_cursor !== undefined) nextCursor = data.next_cursor;
+    else if (data.cursor !== undefined) nextCursor = data.cursor;
+  }
   return {
     items: pickList(data),
-    isEnd: data ? (data.is_end === undefined ? true : !!data.is_end) : true,
-    nextCursor: data ? (data.next_cursor !== undefined ? data.next_cursor : (data.cursor !== undefined ? data.cursor : null)) : null,
+    isEnd: isEnd,
+    nextCursor: nextCursor,
     raw: data || {},
   };
 }
 
 function itemId(it) {
-  return it.media_id !== undefined ? it.media_id
-    : it.note_id !== undefined ? it.note_id
-    : it.folder_id !== undefined ? it.folder_id
-    : it.id !== undefined ? it.id
-    : it.doc_id !== undefined ? it.doc_id : '';
+  if (it.media_id !== undefined) return it.media_id;
+  if (it.note_id !== undefined) return it.note_id;
+  if (it.folder_id !== undefined) return it.folder_id;
+  if (it.id !== undefined) return it.id;
+  if (it.doc_id !== undefined) return it.doc_id;
+  return '';
 }
 
 function itemTitle(it) {
@@ -368,7 +388,7 @@ function emptyStateHtml(iconName, title, desc, actionHtml) {
     '</div>';
 }
 
-function skeletonRows(n, cols) {
+function skeletonRows(n) {
   let html = '';
   for (let i = 0; i < (n || 5); i++) {
     html += '<div class="sk-row">';

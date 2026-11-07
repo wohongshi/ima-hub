@@ -63,7 +63,7 @@ type Task struct {
 	Title     string `json:"title"`
 	Note      string `json:"note"`
 	Status    string `json:"status"` // todo | doing | done
-	Due       any    `json:"due"`   // 兼容日期字符串（2026-11-07）/Unix 秒/""（无）
+	Due       any    `json:"due"`    // 兼容日期字符串（2026-11-07）/Unix 秒/""（无）
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 }
@@ -111,16 +111,16 @@ type Settings struct {
 }
 
 type data struct {
-	Users      []User             `json:"users"`
-	Settings   Settings           `json:"settings"`
-	Sessions   map[string]Session `json:"sessions"`
-	NextID     int                `json:"next_id"`
+	Users    []User             `json:"users"`
+	Settings Settings           `json:"settings"`
+	Sessions map[string]Session `json:"sessions"`
+	NextID   int                `json:"next_id"`
 	// TeamAccounts 团队共享 ima 账号池（知识库数据全团队互通）。
-	TeamAccounts []IMAAccount     `json:"team_accounts,omitempty"`
-	Activities   []Activity       `json:"activities,omitempty"`
-	Tasks        []Task           `json:"tasks,omitempty"`
-	Events       []Event          `json:"events,omitempty"`
-	Announcements []Announcement  `json:"announcements,omitempty"`
+	TeamAccounts  []IMAAccount   `json:"team_accounts,omitempty"`
+	Activities    []Activity     `json:"activities,omitempty"`
+	Tasks         []Task         `json:"tasks,omitempty"`
+	Events        []Event        `json:"events,omitempty"`
+	Announcements []Announcement `json:"announcements,omitempty"`
 }
 
 type Store struct {
@@ -334,6 +334,12 @@ func (s *Store) CreateSession(userID string) (string, error) {
 	defer s.mu.Unlock()
 	tok := randomToken()
 	now := time.Now()
+	// 顺手清理过期会话，防长期运行会话表只增不减
+	for k, v := range s.d.Sessions {
+		if v.ExpiresAt < now.Unix() {
+			delete(s.d.Sessions, k)
+		}
+	}
 	s.d.Sessions[tok] = Session{UserID: userID, CreatedAt: now.Unix(), ExpiresAt: now.Add(sessionTTL).Unix()}
 	return tok, s.saveLocked()
 }
@@ -348,11 +354,44 @@ func (s *Store) GetSession(tok string) (*Session, bool) {
 	return &sess, true
 }
 
-func (s *Store) DeleteSession(tok string) {
+func (s *Store) DeleteSession(tok string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.d.Sessions, tok)
-	_ = s.saveLocked()
+	return s.saveLocked()
+}
+
+// RevokeUserSessionsExcept 吊销某用户除 keepTok 外的全部会话（改密后让旧会话失效）。
+func (s *Store) RevokeUserSessionsExcept(userID, keepTok string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.d.Sessions {
+		if v.UserID == userID && k != keepTok {
+			delete(s.d.Sessions, k)
+		}
+	}
+	return s.saveLocked()
+}
+
+// SetupAdmin 首次初始化：仅当无任何用户时创建首个用户（并发下防双管理员）。
+func (s *Store) SetupAdmin(u *User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.d.Users) > 0 {
+		return errors.New("已完成初始化")
+	}
+	for i := range s.d.Users {
+		if s.d.Users[i].Username == u.Username {
+			return errors.New("用户名已存在")
+		}
+	}
+	u.ID = itoaID(s.d.NextID)
+	s.d.NextID++
+	if u.CreatedAt == 0 {
+		u.CreatedAt = time.Now().Unix()
+	}
+	s.d.Users = append(s.d.Users, *u)
+	return s.saveLocked()
 }
 
 // --- settings ---
@@ -511,6 +550,11 @@ func (s *Store) UpdateTeamAccount(id string, fn func(*IMAAccount) error) error {
 			cp := s.d.TeamAccounts[i]
 			if err := fn(&cp); err != nil {
 				return err
+			}
+			for j, t := range s.d.TeamAccounts {
+				if j != i && t.Name == cp.Name {
+					return errors.New("已有同名 ima 账号：" + cp.Name)
+				}
 			}
 			s.d.TeamAccounts[i] = cp
 			return s.saveLocked()

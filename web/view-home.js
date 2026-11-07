@@ -179,8 +179,10 @@ function renderHomeHero() {
   };
   bind('hero-upload', function () { openUploadModal(null); });
   bind('hero-import', function () {
+    // 不赌渲染时机：挂起导入请求，由文件页在知识库就绪后弹出导入框
+    filesState.pendingImport = true;
     if (location.hash !== '#/files') location.hash = '#/files';
-    setTimeout(openImportModal, 250);
+    else renderFilesView($('#view-root'));
   });
   bind('hero-note', function () { openNewNoteModal(); });
   bind('hero-scan', function () { startScan(); });
@@ -206,16 +208,16 @@ function openAskModal(question) {
     '<div id="ask-loading" class="loading-center" style="padding:22px 0"><div class="spinner"></div><div>正在检索团队知识库…</div></div>' +
     '<div id="ask-answer"></div>' +
     '<div id="ask-sources"></div>';
-  showModal({
+  const m = showModal({
     title: '知识库问答',
     body: bodyHtml,
     footer: '<button class="btn primary" data-close>关闭</button>',
   });
   apiPost('/api/ask', { q: question }).then(function (data) {
-    const loading = $('#ask-loading');
+    const loading = $('#ask-loading', m.root);
     if (loading) loading.remove();
-    const answerBox = $('#ask-answer');
-    const srcBox = $('#ask-sources');
+    const answerBox = $('#ask-answer', m.root);
+    const srcBox = $('#ask-sources', m.root);
     if (!answerBox || !srcBox) return;
     const mode = data.mode;
     let aHtml = '';
@@ -255,7 +257,7 @@ function openAskModal(question) {
       });
     }
   }).catch(function () {
-    const loading = $('#ask-loading');
+    const loading = $('#ask-loading', m.root);
     if (loading) loading.innerHTML = '<div class="hint">查询失败，请稍后重试</div>';
   });
 }
@@ -562,6 +564,12 @@ function taskStatusLabel(s) {
   return s === 'doing' ? '进行中' : s === 'done' ? '已完成' : '待办';
 }
 
+function taskStatusClass(s) {
+  if (s === 'done') return 'ok';
+  if (s === 'doing') return '';
+  return 'muted';
+}
+
 function renderHomeTasks() {
   const box = $('#home-tasks');
   if (!box) return;
@@ -593,7 +601,7 @@ function renderHomeTasks() {
         '  <div class="task-title' + (done ? ' done' : '') + '" data-act="edit">' + escapeHtml(t.title || '(无标题)') + '</div>' +
         (t.note ? '  <div class="task-note">' + escapeHtml(t.note) + '</div>' : '') +
         '  <div class="task-meta">' +
-        '    <span class="badge ' + (done ? 'ok' : t.status === 'doing' ? '' : 'muted') + '">' + taskStatusLabel(t.status) + '</span>' +
+        '    <span class="badge ' + taskStatusClass(t.status) + '">' + taskStatusLabel(t.status) + '</span>' +
         (t.by ? '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(t.by) + '</span>' : '') +
         (t.due ? '<span class="' + (over ? 'due-over' : 'muted') + '">' + (over ? '已过期 · ' : '截止 ') + escapeHtml(formatDue(t.due)) + '</span>' : '') +
         '  </div>' +

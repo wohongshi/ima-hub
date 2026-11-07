@@ -45,7 +45,6 @@ function applyTheme() {
     const svg = icon(name, 16);
     if (b.classList.contains('icon') && !b.textContent.trim()) b.innerHTML = svg;
     else b.innerHTML = svg + (b.id === 'theme-btn' ? '主题' : '');
-    if (b.id === 'login-theme-btn') b.innerHTML = svg;
     b.title = dark ? '切换到浅色模式' : '切换到深色模式';
   });
 }
@@ -179,6 +178,7 @@ function bindAuthEvents() {
     try {
       if (mode === 'setup') {
         await apiPost('/api/setup', { username: username, password: password });
+        state.needSetup = false;
         toast('管理员创建成功，欢迎使用 ImaHub', 'success');
         await refreshMe();
         showApp();
@@ -197,8 +197,8 @@ function bindAuthEvents() {
       /* api 层已提示 */
     }
     btn.disabled = false;
-    btn.textContent = oldText;
-    if (mode === 'setup') btn.textContent = '创建管理员并进入';
+    // 注册成功后表单已切登录态（renderAuthForm 定稿文案），模式未变才回写旧文案
+    if (state.authMode === mode) btn.textContent = oldText;
   });
 
   $('#login-theme-btn').addEventListener('click', toggleTheme);

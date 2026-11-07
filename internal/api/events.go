@@ -128,7 +128,11 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request, u *st
 func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
 	if err := s.Store.DeleteEvent(id); err != nil {
-		writeErr(w, http.StatusNotFound, 404, "日程不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, 404, "日程不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	writeOK(w, nil)

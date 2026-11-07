@@ -17,7 +17,7 @@ import (
 	"imahub/internal/store"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type Server struct {
 	Store      *store.Store
@@ -66,7 +66,14 @@ func writeImaErr(w http.ResponseWriter, err error) {
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	// JSON 请求体上限 2MB（login/register/setup 也走这里，防超大 body）
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeErr(w, http.StatusRequestEntityTooLarge, 413, "请求体过大")
+			return false
+		}
 		writeBizErr(w, "请求体不是合法 JSON")
 		return false
 	}
@@ -209,10 +216,6 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
-	if s.Store.UserCount() != 0 {
-		writeErr(w, http.StatusForbidden, 403, "已完成初始化")
-		return
-	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -220,16 +223,24 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	u, err := s.createUser(req.Username, req.Password, "admin")
+	u, err := s.buildUser(req.Username, req.Password, "admin")
 	if err != nil {
 		writeBizErr(w, err.Error())
 		return
 	}
-	s.setSessionCookie(w, r, u)
+	// 原子初始化：并发双请求只有一个能成功（防双管理员）
+	if err := s.Store.SetupAdmin(u); err != nil {
+		writeErr(w, http.StatusForbidden, 403, err.Error())
+		return
+	}
+	if err := s.setSessionCookie(w, r, u); err != nil {
+		writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
+		return
+	}
 	writeOK(w, map[string]any{"user": publicUser(u)})
 }
 
-func (s *Server) createUser(username, password, role string) (*store.User, error) {
+func (s *Server) buildUser(username, password, role string) (*store.User, error) {
 	if err := auth.ValidateUsername(username); err != nil {
 		return nil, err
 	}
@@ -243,11 +254,18 @@ func (s *Server) createUser(username, password, role string) (*store.User, error
 	if err != nil {
 		return nil, err
 	}
-	u := &store.User{
+	return &store.User{
 		Username: username,
 		PassHash: hash,
 		Role:     role,
 		MCPToken: store.RandomToken(),
+	}, nil
+}
+
+func (s *Server) createUser(username, password, role string) (*store.User, error) {
+	u, err := s.buildUser(username, password, role)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.Store.AddUser(u); err != nil {
 		return nil, err
@@ -255,20 +273,29 @@ func (s *Server) createUser(username, password, role string) (*store.User, error
 	return u, nil
 }
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, u *store.User) {
+// requestIsTLS 判断请求是否经 TLS（含反代 X-Forwarded-Proto），决定 Cookie 的 Secure 标志。
+func requestIsTLS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, u *store.User) error {
 	tok, err := s.Store.CreateSession(u.ID)
 	if err != nil {
-		log.Printf("create session: %v", err)
-		return
+		return err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sidCookie,
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestIsTLS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   30 * 24 * 3600,
 	})
+	return nil
 }
 
 func publicUser(u *store.User) map[string]any {
@@ -298,13 +325,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, 403, "账号已被禁用")
 		return
 	}
-	s.setSessionCookie(w, r, u)
+	if err := s.setSessionCookie(w, r, u); err != nil {
+		writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
+		return
+	}
 	writeOK(w, map[string]any{"user": publicUser(u)})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sidCookie); err == nil {
-		s.Store.DeleteSession(c.Value)
+		if err := s.Store.DeleteSession(c.Value); err != nil {
+			// 持久化失败时会话可能在重启后复活，如实报错让用户重试
+			writeErr(w, http.StatusInternalServerError, 500, "登出未持久化，请重试")
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sidCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	writeOK(w, nil)
@@ -327,7 +361,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeBizErr(w, err.Error())
 		return
 	}
-	s.setSessionCookie(w, r, u)
+	if err := s.setSessionCookie(w, r, u); err != nil {
+		writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
+		return
+	}
 	writeOK(w, map[string]any{"user": publicUser(u)})
 }
 
@@ -397,6 +434,14 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, u 
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
+	}
+	// 改密后吊销其余会话（保留当前会话），被窃会话不再有效
+	keep := ""
+	if c, err := r.Cookie(sidCookie); err == nil {
+		keep = c.Value
+	}
+	if err := s.Store.RevokeUserSessionsExcept(u.ID, keep); err != nil {
+		log.Printf("吊销旧会话失败: %v", err)
 	}
 	writeOK(w, nil)
 }
@@ -520,7 +565,11 @@ func (s *Server) handleRotateMCPToken(w http.ResponseWriter, r *http.Request, u 
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	nu, _ := s.Store.FindUserByID(u.ID)
+	nu, ok := s.Store.FindUserByID(u.ID)
+	if !ok {
+		writeErr(w, http.StatusNotFound, 404, "用户不存在")
+		return
+	}
 	writeOK(w, map[string]any{"token": nu.MCPToken})
 }
 
@@ -595,6 +644,12 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, u
 		}
 		writeBizErr(w, err.Error())
 		return
+	}
+	if req.Password != nil {
+		// 管理员重置口令：吊销该用户全部会话（旧口令对应会话不可信）
+		if err := s.Store.RevokeUserSessionsExcept(id, ""); err != nil {
+			log.Printf("吊销用户 %s 会话失败: %v", id, err)
+		}
 	}
 	writeOK(w, nil)
 }

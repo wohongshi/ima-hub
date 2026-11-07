@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 
 VERSION="$(grep -oP 'const Version = "\K[^"]+' internal/api/api.go)"
 OUT=dist
+rm -rf "$OUT"   # 清掉旧版本产物，防新旧混杂
 mkdir -p "$OUT"
 
 build_one() {

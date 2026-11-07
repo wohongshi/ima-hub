@@ -14,7 +14,7 @@ import (
 // uploadArchive 压缩包（zip/7z/rar）自动解压上传：
 // 解压到临时目录后逐个文件走标准上传流程（同一账号/知识库），返回逐项结果。
 func (s *Server) uploadArchive(w http.ResponseWriter, r *http.Request, u *store.User,
-	acc *store.IMAAccount, c *ima.Client, kbID, folderID, name string, fileHeader *multipart.FileHeader) {
+	acc *store.IMAAccount, c *ima.Client, kbID, folderID, name string, fileHeader *multipart.FileHeader, force bool) {
 
 	const maxArchiveSelf = 500 << 20
 	if fileHeader.Size > maxArchiveSelf {
@@ -61,8 +61,18 @@ func (s *Server) uploadArchive(w http.ResponseWriter, r *http.Request, u *store.
 
 	uploaded := []map[string]any{}
 	failed := []map[string]any{}
+	skipped := []map[string]any{}
 	var totalSize int64
 	for _, e := range files {
+		// 同名闸：与单文件流程一致；批量语义为跳过并报清单（force 才覆盖上传）
+		if !force {
+			if mt := ima.DetectMediaType(e.RelName); mt >= 0 {
+				if names, err := c.CheckRepeatedNames(r.Context(), kbID, folderID, []string{e.RelName}, mt); err == nil && names[e.RelName] {
+					skipped = append(skipped, map[string]any{"title": e.RelName, "reason": "知识库已存在同名条目（加 force 覆盖上传）"})
+					continue
+				}
+			}
+		}
 		f, err := os.Open(e.Path)
 		if err != nil {
 			failed = append(failed, map[string]any{"title": e.RelName, "error": err.Error()})
@@ -87,18 +97,19 @@ func (s *Server) uploadArchive(w http.ResponseWriter, r *http.Request, u *store.
 			Title: name + "（自动解压 " + strconv.Itoa(len(uploaded)) + " 个文件）",
 			IA:    acc.ID, AccountName: acc.Name,
 			KBName: r.FormValue("kb_name"),
-			Size:  totalSize, UserID: u.ID, By: u.Username,
+			Size:   totalSize, UserID: u.ID, By: u.Username,
 		})
 	}
 
 	writeOK(w, map[string]any{
-		"archive":       true,
-		"file_name":     name,
-		"extracted":     len(files),
-		"uploaded":      uploaded,
-		"failed":        failed,
-		"ia":            acc.ID,
-		"account_name":  acc.Name,
-		"kb_id":         kbID,
+		"archive":      true,
+		"file_name":    name,
+		"extracted":    len(files),
+		"uploaded":     uploaded,
+		"failed":       failed,
+		"skipped":      skipped,
+		"ia":           acc.ID,
+		"account_name": acc.Name,
+		"kb_id":        kbID,
 	})
 }

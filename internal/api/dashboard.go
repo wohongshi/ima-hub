@@ -45,7 +45,11 @@ type recentItem struct {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, u *store.User) {
-	if s.Scanner != nil && s.Scanner.Stale(30*time.Minute) {
+	if s.Scanner == nil {
+		writeErr(w, http.StatusInternalServerError, 500, "扫描器未初始化")
+		return
+	}
+	if s.Scanner.Stale(30 * time.Minute) {
 		s.Scanner.Start() // 异步补扫
 	}
 	snap := s.Scanner.Snapshot()
@@ -143,9 +147,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, u *stor
 	}
 
 	scanMap := map[string]any{
-		"status":      st.Status,
+		"status":       st.Status,
 		"last_scan_at": st.LastScanAt,
-		"progress":    map[string]any{"done": st.Done, "total": st.Total},
+		"progress":     map[string]any{"done": st.Done, "total": st.Total},
 		// 平铺兼容
 		"done":  st.Done,
 		"total": st.Total,
@@ -265,7 +269,11 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request, u *sto
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
 	if err := s.Store.DeleteTask(id); err != nil {
-		writeErr(w, http.StatusNotFound, 404, "任务不存在")
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, 404, "任务不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	writeOK(w, nil)

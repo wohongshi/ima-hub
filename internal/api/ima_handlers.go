@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -320,7 +321,10 @@ func (s *Server) handleImaDownload(w http.ResponseWriter, r *http.Request, u *st
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
-	_, _ = io.Copy(w, body)
+	if _, err := io.Copy(w, body); err != nil {
+		// 头已发出，只能记日志（连接中断/上游短读）
+		log.Printf("下载代理流式拷贝中断: %v", err)
+	}
 }
 
 func extForMediaType(t int) string {
@@ -379,7 +383,15 @@ func (s *Server) handleImaCheckNames(w http.ResponseWriter, r *http.Request, u *
 
 // handleImaUpload multipart：file / kb_id / folder_id / force / ia
 func (s *Server) handleImaUpload(w http.ResponseWriter, r *http.Request, u *store.User) {
+	// 请求体上限：单包 500MB 上限 + 余量，防无界 multipart 落盘
+	const maxUploadBody = 550 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeErr(w, http.StatusRequestEntityTooLarge, 413, fmt.Sprintf("上传超过 %dMB 上限", maxUploadBody>>20))
+			return
+		}
 		writeBizErr(w, "multipart 解析失败: "+err.Error())
 		return
 	}
@@ -402,14 +414,23 @@ func (s *Server) handleImaUpload(w http.ResponseWriter, r *http.Request, u *stor
 			writeBizErr(w, "尚未绑定 IMA 账号（设置页可添加，或让管理员配置默认凭证）")
 			return
 		}
-		a := accs[s.nextRR(u.ID)%int64(len(accs))]
-		acc = &a
+		start := int(s.nextRR(u.ID) % int64(len(accs)))
+		// 轮询时跳过未配置默认上传知识库的账号（手动指定 kb 则任意账号可用）
+		var chosen *store.IMAAccount
+		for i := 0; i < len(accs); i++ {
+			a := accs[(start+i)%len(accs)]
+			if kbID != "" || a.UploadKBID != "" {
+				chosen = &a
+				break
+			}
+		}
+		if chosen == nil {
+			writeBizErr(w, "团队账号池均未配置默认上传知识库（设置页配置），或手动指定目标知识库")
+			return
+		}
+		acc = chosen
 		if kbID == "" {
 			kbID = acc.UploadKBID
-			if kbID == "" {
-				writeBizErr(w, "账号「"+acc.Name+"」未配置默认上传知识库（设置页配置），或手动指定目标知识库")
-				return
-			}
 		}
 	} else {
 		resolved, err := s.resolveImaAccount(u, ia)
@@ -433,7 +454,7 @@ func (s *Server) handleImaUpload(w http.ResponseWriter, r *http.Request, u *stor
 	name := filepath.Base(fileHeader.Filename)
 	// 压缩包（zip/7z/rar）：自动解压并逐个上传内容
 	if ima.IsArchive(name) {
-		s.uploadArchive(w, r, u, acc, c, kbID, folderID, name, fileHeader)
+		s.uploadArchive(w, r, u, acc, c, kbID, folderID, name, fileHeader, force)
 		return
 	}
 	if ima.DetectMediaType(name) < 0 {
@@ -505,8 +526,9 @@ func (s *Server) handleImaImportURLs(w http.ResponseWriter, r *http.Request, u *
 		if raw == "" {
 			continue
 		}
-		if _, err := url.Parse(raw); err != nil {
-			writeBizErr(w, "URL 无效："+raw)
+		uu, err := url.Parse(raw)
+		if err != nil || (uu.Scheme != "http" && uu.Scheme != "https") || uu.Host == "" {
+			writeBizErr(w, "URL 无效（需 http/https 完整地址）："+raw)
 			return
 		}
 		clean = append(clean, raw)
@@ -555,19 +577,27 @@ func (s *Server) handleImaNotebooks(w http.ResponseWriter, r *http.Request, u *s
 		errs := []map[string]any{}
 		for i := range accs {
 			a := accs[i]
-			rsp, err := s.clientFor(&a).ListNotebook(r.Context(), "0", limit)
-			if err != nil {
-				errs = append(errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
-				continue
-			}
-			for _, f := range rsp.NoteFolderInfos {
-				items = append(items, map[string]any{
-					"folder_id": f.FolderID, "name": f.Name,
-					"create_time": f.CreateTime, "modify_time": f.ModifyTime,
-					"note_number": f.NoteNumber, "parent_folder_id": f.ParentFolderID,
-					"folder_type": f.FolderType,
-					"ia":          a.ID, "account_name": a.Name,
-				})
+			// 聚合模式逐账号翻页拉全量（上限 10 页/账号），is_end 才能如实为 true
+			cursor := "0"
+			for page := 0; page < 10; page++ {
+				rsp, err := s.clientFor(&a).ListNotebook(r.Context(), cursor, limit)
+				if err != nil {
+					errs = append(errs, map[string]any{"ia": a.ID, "account_name": a.Name, "error": err.Error()})
+					break
+				}
+				for _, f := range rsp.NoteFolderInfos {
+					items = append(items, map[string]any{
+						"folder_id": f.FolderID, "name": f.Name,
+						"create_time": f.CreateTime, "modify_time": f.ModifyTime,
+						"note_number": f.NoteNumber, "parent_folder_id": f.ParentFolderID,
+						"folder_type": f.FolderType,
+						"ia":          a.ID, "account_name": a.Name,
+					})
+				}
+				if rsp.IsEnd || rsp.NextCursor == "" {
+					break
+				}
+				cursor = rsp.NextCursor
 			}
 		}
 		writeOK(w, map[string]any{"note_folder_infos": items, "errors": errs, "is_end": true, "next_cursor": "", "aggregated": true})
@@ -602,7 +632,7 @@ func (s *Server) handleImaNotes(w http.ResponseWriter, r *http.Request, u *store
 		writeImaErr(w, err)
 		return
 	}
-	writeOK(w, map[string]any{"note_book_list": rsp.NoteBookList, "is_end": rsp.IsEnd})
+	writeOK(w, map[string]any{"note_book_list": rsp.NoteBookList, "is_end": rsp.IsEnd, "next_cursor": rsp.NextCursor})
 }
 
 func (s *Server) handleImaNotesSearch(w http.ResponseWriter, r *http.Request, u *store.User) {
