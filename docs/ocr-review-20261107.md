@@ -36,8 +36,6 @@
 
 ## 回归记录
 
-- `go vet ./...` 干净、`go build ./...` OK、`go test ./...` 全过（含新 auth_test）
-- `node --check` 改动的 5 个 JS 全过
-- 行为探针 `probe_fixes.sh`（mock 栈）**ALL_GREEN 10/10**
-- `scripts/smoke.sh` 全接口冒烟 SMOKE_EXIT=0（23 个成功响应，无 401/500）
-- 已重新构建并重启 `imahub.service`，healthz OK
+第一批（critical/high）：`go vet ./...` 干净、`go build ./...` OK、`go test ./...` 全过（含新 auth_test）；`node --check` 5 个 JS 全过；行为探针 `probe_fixes.sh` ALL_GREEN 10/10；`scripts/smoke.sh` SMOKE_EXIT=0；已部署 :8090。
+
+第二批（medium/low + web 28 条）：vet/build/test 全过；JS 语法 7 文件复查全过（CSS 括号平衡 464/464）；行为探针 ALL_GREEN 10/10（复跑）；smoke 23 项 0 错；产物三平台 BUILD_EXIT=0，arm64 实跑自报 v0.1.1 + healthz OK + 优雅退出验证；已部署 :8090（v0.1.1）。
