@@ -1,0 +1,275 @@
+[
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "scripts/probe_queue.sh",
+  "lines": "27-27",
+  "content": "`QID`/`QID2` are parsed from the response with stderr discarded and never validated. If enqueue fails (e.g. setup not done, 400 from the handler) `QID` is empty, and `grep -q \"$QID\"` then matches *every* line, so the \"成功条目未出队\" branch fires for the wrong reason; an empty `QID2` makes `POST /api/queue//retry` and `DELETE /api/queue/` hit non-existent routes, and `grep -q \"$QID2\"` always matches. The probe then reports queue defects that are actually probe setup failures. Fail fast right after extraction."
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "internal/api/clientlink.go",
+  "lines": "231-232",
+  "content": "The `since` cursor comes from `ClientLastSync`, which is written with the *client's* local clock (`st.ClientLastSync = time.Now().Unix()` a few lines below in this function), but the server stamps `UpdatedAt` with its own clock and filters with a strict `UpdatedAt > since`.\n\nConsequences on a remote team server:\n- Clock skew: if the client clock leads the server by d seconds, every change made on the server in `(P-d, P]` (P = previous client-local cursor) is skipped forever, since the next `since` is already ≥ P.\n- Even with perfectly synced clocks, a change stamped in the same second as the c"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "120-121",
+  "content": "`drainQueue`/`drainOne` have two independent concurrent callers: the 60s ticker goroutine started in `main.go` (`go srv.RunQueueDrainer(stopDrain)`) and the synchronous HTTP handlers `handleQueueDrain`/`handleQueueRetry`. The \"单飞\" comment only serializes iterations *inside* one call — nothing prevents the ticker and a manual drain (or two browsers) from selecting the same pending ID. Both then run `UploadFile` on the same file, both call `BumpUpload`/`AddActivity` (double-counted stats and duplicate activity rows) and both race `os.Remove`/`DeleteQueueItem`. A `handleQueueDelete` issued meanwh"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "168-170",
+  "content": "Any transient error (offline/DNS failure/ima 5xx/10-min timeout) permanently flips the item to `failed`, and `drainQueue` only ever picks `pending` items. So the offline scenario this feature targets is broken: an item queued while offline is attempted by the next 60s tick (still offline), marked `failed`, and from then on the auto-drainer never touches it again — `\"网络/ima 恢复后自动续传\"` only becomes true if connectivity comes back within 60 seconds, otherwise the user must press 重试 manually. Distinguish permanent failures (unsupported type, no account/KB, user gone) from retryable ones: keep the l"
+ },
+ {
+  "sev": "high",
+  "cat": "security",
+  "path": "scripts/probe_queue.sh",
+  "lines": "18-19",
+  "content": "Only a single user is created, so the probe never exercises queue authorization. `handleQueueList` returns the global `s.Store.ListQueue()` (including each item's absolute `path`) and `handleQueueDelete`/`handleQueueRetry` operate purely by ID with no ownership check, so a second login can read and delete another user's queued file. Add a second user (e.g. `POST /api/admin/users`) and assert that `GET /api/queue` does not expose the first user's item/`path`, and that `DELETE`/`retry` on `$QID2` from that session is rejected — otherwise this security boundary stays untested."
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "673-673",
+  "content": "入队条件只在传输层失败（`apiUploadTo` 仅在 `xhr.onerror/ontimeout`/非 JSON 响应时给 `code = -1`）时触发。而“ima 不可用/上游 502”“账号池未配置”等场景服务端返回的是 JSON 业务错误（`writeImaErr` → 502、`writeBizErr` → 400），永远进不了队列；反之 `-1` 说明浏览器连本地网关都断了，此刻 `/api/queue/upload` 几乎同样失败。结果是「离线队列」在真实场景中基本不可达。建议把可重试的上游错误（5xx）也纳入入队判断。"
+ },
+ {
+  "sev": "high",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "39-39",
+  "content": "入队时只校验文件名，没有复用 `handleImaUpload` 的类型/大小校验（`ima.DetectMediaType` / `ima.IsArchive` / `ima.MaxUploadSize`）。后果是确定性的：前端把「网络失败的上传」统统一股脑塞进队列（`web/view-files.js` 的 `queueUploadFallback`），压缩包会以 `.zip` 原样入队，而 `drainOne → UploadFile` 里 `DetectMediaType` 对 zip/7z/rar 返回 -1，重试永远报「不支持的文件类型」；txt/md/csv/xmind 的实际上限只有 10MB、图片 30MB、epub 50MB，其余 200MB，而这里放行了 550MB，这类条目既占满 `data/queue/` 磁盘又永远传不上去。建议入队时就按 `handleImaUpload` 的规则做类型/大小校验（压缩包要么拒绝、要么在队列路径里走解压流程），并把 body 上限收敛到 `ima.MaxUploadSize` 的最大值，避免与 `ima_handlers.go` 的 `maxUploadBody` 形成两套不一致的门槛。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "scripts/probe_queue.sh",
+  "lines": "54-54",
+  "content": "The script always exits 0: the last command is `echo`, so `FAIL>0` never reaches the exit status and CI cannot fail on a regression. Return a non-zero code in the failure branch."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "scripts/probe_queue.sh",
+  "lines": "16-16",
+  "content": "Readiness/cleanup: a fixed `sleep 2` races a slow start, and there is no `trap`, so an early failure or a kill misses leaves `$SRV` bound to 18097 plus `/tmp/ihq*` artifacts, breaking the next run. Also nothing verifies `$BIN` exists (should be checked before line 14). The server exposes `GET /healthz` (internal/api/router.go:10) — poll it instead of sleeping, and register cleanup on EXIT."
+ },
+ {
+  "sev": "medium",
+  "cat": "maintainability",
+  "path": "scripts/probe_queue.sh",
+  "lines": "43-43",
+  "content": "Assertions grep raw JSON substrings rather than parsing the envelope, which the repo already does elsewhere (scripts/smoke.sh uses `python3 -c 'json.load(...)'`). `\\|` in a BRE is a GNU extension — it silently degrades to a literal on stricter greps, so the retry check can never match; `grep -q 'failed'` (line 35) and `'qadmin\\|待传\\|pending'` (line 27) can also match unrelated fields such as an `error` message, and `'qadmin\\|待传'` never appear in this payload at all (only `pending` does). Prefer a small `field()` helper or `grep -E`."
+ },
+ {
+  "sev": "medium",
+  "cat": "test",
+  "path": "scripts/probe_queue.sh",
+  "lines": "39-39",
+  "content": "This section is labelled \"续传\" but only asserts that retry still fails for a bad account; it never exercises the real resume path. Missing boundaries for the new queue implementation: failed item keeps its `Path`/`Size` and is still drainable after a process restart (restart-on-same-`--data`, then `POST /api/queue/drain` succeeds), oversized upload vs. `maxQueueBody` (550MB in handleQueueUpload, silently truncated by `io.LimitReader`), missing staged file on drain, filename with separators (handler uses `filepath.Base`), and drain ordering. Add at least the restart-resume case, which is the fea"
+ },
+ {
+  "sev": "medium",
+  "cat": "maintainability",
+  "path": "scripts/probe_queue.sh",
+  "lines": "12-12",
+  "content": "Shared-state isolation: ports (18093/18094/18097) and `/tmp/ihq-*` are hardcoded, nothing checks that the mock ima/COS stacks are actually listening, and no mock stack exists under `scripts/` (only build.sh/smoke.sh) even though the header lists it as a prerequisite — so this probe is not reproducible for another developer or in CI. `rm -rf \"$DATA\"` is also unguarded. Use `mktemp -d` for the data dir, fail early if `$BIN` or `127.0.0.1:18094/18093` are unreachable, and guard the delete (e.g. `[ -n \"$DATA\" ] && case \"$DATA\" in /tmp/ihq-*) ...`)."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/clientlink.go",
+  "lines": "272-273",
+  "content": "Switching from `ReplaceAnnouncements` to additive `MergeAnnouncements` means server-side announcement *deletions* no longer reach clients. `DeleteAnnouncement` (internal/store/store.go:965) records no tombstone, and the tombstones map only carries `task:`/`event:` keys, so a deleted announcement is never returned in any pull and stays cached on the client forever (it is still served by `GET /api/announcements`). Either add announcement tombstones that are filtered/merged like tasks/events, or have the pull convey the authoritative announcement set so removals can be applied."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/sync.go",
+  "lines": "66-71",
+  "content": "`ListAnnouncements(50)` returns the 50 most recently *created* entries (it walks the slice backwards; `UpdateAnnouncement` edits in place and does not reorder), so the pre-filter window is defined by creation order, not by `UpdatedAt`.\n\nAs a result, an edit to an announcement that is older than the 50 newest by creation is never returned by an incremental pull, even though its `UpdatedAt > since` — clients stay permanently stale (and combined with the additive merge on the client there is no other path to fix it). Since announcements are few, iterate the full announcement set here (e.g. add a "
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "114-115",
+  "content": "`drainQueue` runs synchronously inside the request: each item executes a blocking `UploadFile` with a 10-minute `context.Background()` timeout, so a drain of N items can hold this handler for up to N×10 minutes and ignores client cancellation. The settings page (`web/view-misc.js` #queue-drain) awaits this POST with no timeout, so the button stays disabled for the whole duration. Run the drain in a background goroutine and return immediately (or at least derive the context from `r.Context()` and cap per-request work); `handleQueueRetry` has the same problem."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "62-63",
+  "content": "The `Close` error is discarded. If the flush/short write fails (e.g. ENOSPC on a network filesystem where `write(2)` succeeds but the deferred writeback fails), the staged file is truncated while the item is persisted with `Size: n` and the API reports success; the drainer then uploads a truncated body or fails with a size mismatch, and the user has no idea the file is corrupt. Check the close error before recording the item."
+ },
+ {
+  "sev": "medium",
+  "cat": "test",
+  "path": "scripts/probe_queue.sh",
+  "lines": "25-25",
+  "content": "Only the happy path of the new queue upload is covered. The upload handler is where user-controlled filenames and sizes hit the filesystem (`filepath.Base(fhs[0].Filename)`, `io.LimitReader(src, 550<<20)`), so the probe should add the boundary cases it is meant to guard: (a) a traversal filename (`-F \"file=@/tmp/ihq-up.txt;filename=../../escape.txt\"`) and assert nothing is written outside `$DATA/queue`; (b) a request without the `file` part (expect `code != 0`); (c) an over-limit upload and assert it is rejected instead of being silently truncated (`LimitReader` truncates rather than errors); "
+ },
+ {
+  "sev": "medium",
+  "cat": "test",
+  "path": "scripts/probe_queue.sh",
+  "lines": "35-35",
+  "content": "The drain response is thrown away, so the probe never checks `data.sent`, and \"good item was dequeued\" is only inferred later from the ID disappearing. It also never checks the other half of the contract: the staged file must be gone from the queue directory (`s.queueDir()` resolves to `$DATA/queue`). A regression where `DeleteQueueItem` succeeds but `os.Remove(item.Path)` is skipped (disk leak) would still be ALL_GREEN. Parse the drain envelope and assert both `sent` and that `$DATA/queue` no longer contains the file named after `$QID`."
+ },
+ {
+  "sev": "medium",
+  "cat": "test",
+  "path": "scripts/probe_queue.sh",
+  "lines": "37-37",
+  "content": "This assertion greps the whole queue payload for the substring `failed`, so it can pass for the wrong reason: if the *good* item also failed (mock stack down, wrong kb, etc.) the string is present and the bad-account path looks verified; and it does not check the `error`/`attempts` fields that the handler is supposed to populate. Assert by ID instead — parse `data.items`, select the entry with `id == QID2`, and require `status == \"failed\"` plus a non-empty `error` (and `attempts >= 1`), while separately requiring the good item (`$QID`) to be absent/succeeded."
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "458-458",
+  "content": "`ia: 'auto'` 被改写成空串，语义已变：直传的 auto 走 `poolAccounts` 轮询（`ima_handlers.go:432`），而队列续传里 `resolveImaAccount(u, \"\")` 只会取“本人第一个账号”（`api.go:151`），随后 `kbID = acc.UploadKBID`。若该账号未配置默认上传知识库，排队条目会在续传时永久失败为“未指定目标知识库”；即使成功，所有排队文件也会挤在同一个账号上，与“扩大容量”的设计不符。建议队列侧显式保留 auto 语义（服务端对空 IA 走容量池选择）。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "676-676",
+  "content": "入队成功后条目仍留在 `queue` 中，且按钮已恢复可用、弹窗只在 `ok > 0` 时关闭。用户再点一次「开始上传」会对同一批文件重新走直传，而服务端队列里的条目仍在 pending（60s 定时器会继续续传），造成重复上传/重复入队。建议把已入队条目从本次列表移除并 `renderQueue()`，或在 `ok + fail + queued === queue.length` 时关闭弹窗。"
+ },
+ {
+  "sev": "medium",
+  "cat": "style",
+  "path": "web/view-misc.js",
+  "lines": "94-94",
+  "content": "`queue-list / queue-item / queue-item-main / queue-item-name` 在 style.css 中没有任何规则（全局搜索 `queue` 无命中），卡片会退化成无边框、无间距的堆叠 div，徽章与两个按钮换行错位；`margin-top:10px` 又用了内联样式。建议参照 `.upl-item`（style.css:499）补一组样式并把内联样式改为类。"
+ },
+ {
+  "sev": "medium",
+  "cat": "style",
+  "path": "web/app.js",
+  "lines": "123-123",
+  "content": "`.chip` 是只读账号标签的样式（style.css:420：`height:18px`、`max-width:96px`、`text-overflow:ellipsis`，且没有重置 button 默认边框），复用它做可点击的服务端按钮会得到 18px 高的触控目标、被截断的服务端地址和多余的按钮边框；容器类 `.chips` 也没有任何样式定义。建议为新按钮单独定义类（或直接用 `.btn.sm`）并补 `.chips` 的 flex/gap 样式。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/app.js",
+  "lines": "93-93",
+  "content": "`|| []` 只能兜住 null。若 `imahub_servers` 里存的是 JSON 对象（旧版本写入、手工修改、其它脚本污染），`loadServerEntries()` 会返回对象，`saveServerEntry()` 里的 `.filter` 直接抛 TypeError；该调用位于登录提交的 try 内，异常被静默吞掉，`refreshMe()/showApp()` 不会执行，表现为“登录成功却停在登录页”。建议校验数组类型。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/app.js",
+  "lines": "267-267",
+  "content": "客户端模式下服务端输入框留空是文档化的默认路径（placeholder「留空用上次」，index.html:49），而 `saveServerEntry` 对空值直接 return，导致最常见的登录流程永远不会产生 chip，功能形同未实现。建议空值时回落到实际生效地址（登录后 `/api/client/status` 或 `state.serverInfo.server`）。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/style.css",
+  "lines": "1080-1081",
+  "content": "`.chip`（style.css:425）和 `.crumb`（style.css:462）的基础规则都带 `overflow: hidden`，会把这两个 `::after` 外扩层裁掉，命中区实际没有任何扩大——面包屑与账号 chip（包括 app.js 新增的登录服务端 chip）仍是 18~26px 的小目标，注释里的「≥40px」并不成立。建议改为直接增大交互元素自身的内边距/最小高度，或把外扩层放在不裁剪的父级上。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/clientlink.go",
+  "lines": "231-231",
+  "content": "`since` (and `ClientActivitySync` read a few lines above) are process-wide cursors that are never reset when the client connects to a *different* server. `Login` only swaps `l.serverURL`/session and `persistSession` only writes `ClientServerURL`/`ClientSession`/`ClientSessionUser`; `handleLogout` also leaves the cursors untouched. So after switching to another server through the new server-chip list (or via `--server`, main.go:66), the first pull asks the new server for `UpdatedAt > <timestamp from the old server>`: everything the new server already had before that time (tasks/events/announcem"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "147-147",
+  "content": "`item.IA == \"\"` 时这里走的是 `resolveImaAccount` 的 `ownFirst`：直接返回该用户第一个自有账号，**不看它有没有 `UploadKBID`**；而 `handleImaUpload` 的 auto 模式是 `poolAccounts` 轮询并跳过没有默认知识库的账号。前端自动模式入队时 `ia` 传空、`kb_id` 也传空（`queueUploadFallback` 里 `ia: fields.ia === 'auto' ? '' : fields.ia`），所以当用户自有账号没配 `UploadKBID`、真正能上传的是团队池账号时，续传会以「未指定目标知识库」失败——这条链路本身是能传的。建议抽一个与 `handleImaUpload` 共用的「自动选号 + 选 KB」helper，`item.IA` 为空时复用轮询/跳过逻辑，而不是落到 `ownFirst`。"
+ },
+ {
+  "sev": "medium",
+  "cat": "bug",
+  "path": "web/view-misc.js",
+  "lines": "127-128",
+  "content": "两个问题：\n1）服务端 `handleQueueDrain`/`handleQueueRetry` 是在请求内同步逐条上传的（每条 10 分钟超时），前端 `await` 期间只有按钮置灰、没有任何进度与耗时提示；待传文件多或链路慢时这个请求会挂几分钟甚至更久，浏览器/反代还可能先超时。建议续传改为后台执行并立即返回，前端轮询 `/api/queue` 刷新列表。\n2）`sent === 0`（全部失败、或条目仍在 pending）时仍然弹绿色 `success`「续传 0 个」，与真实结果相反，应降级为 `warn` 并提示失败/待重试数量。"
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "scripts/probe_queue.sh",
+  "lines": "4-4",
+  "content": "`set -u` is used without `set -o pipefail` and no `curl` result is checked, so a refused connection or non-JSON body yields an empty `$R` that is reported as a content mismatch rather than a transport error. Capture curl's exit status (`curl -sf ... || fail`) or add `set -o pipefail` and a helper that distinguishes HTTP/transport failures from assertion failures."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/api/queue.go",
+  "lines": "91-92",
+  "content": "`DeleteQueueItem` returns either `store.ErrNotFound` or the `saveLocked()` persistence error, and both are reported as 404 \"队列条目不存在\". On a disk write failure the file has already been removed and the in-memory entry deleted, so the client is told the item never existed while the real cause is silently dropped. Branch on `errors.Is(err, store.ErrNotFound)` and return 500 otherwise (same pattern in `handleQueueRetry` with `UpdateQueueItem`)."
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/api/queue.go",
+  "lines": "23-23",
+  "content": "Only the per-file size is capped; there is no limit on the number of queued items or their total bytes, and nothing ever garbage-collects them: `failed` entries stay until the user deletes them, and items belonging to deleted users (`drainOne` → \"归属用户已不存在\") are never cleaned up either. Since the queue is exactly the path used while ima/網絡 is unavailable (nothing drains), a member can fill `data/queue/` indefinitely and take the server down. Consider a total/per-user queue cap (reject with 413/429) plus expiry or a startup sweep for orphaned files."
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "internal/store/store.go",
+  "lines": "731-733",
+  "content": "`AddQueueItem` swallows the `saveLocked()` error and returns only the item, so `handleQueueUpload` reports \"已排队\" even when nothing was persisted. On a failed write the entry lives only in memory: after a restart the user's queued upload silently disappears while the staged file stays in `data/queue/` as an orphan (nothing sweeps that directory). Return `(UploadQueueItem, error)` and let the handler fail (and remove the staged file) when persistence fails."
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/view-misc.js",
+  "lines": "100-100",
+  "content": "删除是破坏性且不可撤销的操作（服务端会同时删掉暂存文件），这里无二次确认，移动端 40px 按钮又紧邻「重试」，误触概率不低；项目内其他破坏性操作（退出登录、覆盖上传）都走 `confirmDialog`。建议加确认。"
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/style.css",
+  "lines": "1073-1075",
+  "content": "`label.checkbox` 在 web/ 下已无任何使用点（现有复选框只有 `.sel-box`（在 `.sel-cell` 内）和 `.switch`/`.switch-line`），所以这半条选择器是死规则；另外对原生 checkbox 设 `padding: 9px` 各浏览器表现不一致（Safari 会忽略或挤压勾选）。建议只保留 `.sel-cell input` 的尺寸设定。"
+ },
+ {
+  "sev": "low",
+  "cat": "security",
+  "path": "internal/api/queue.go",
+  "lines": "79-79",
+  "content": "`store.ListQueue()` 直接序列化后，`UploadQueueItem.Path`（`data/queue/` 下的服务端绝对路径）和 `UserID` 会原样返回给任意登录用户；`handleQueueUpload` / `handleQueueRetry` / `handleQueueDrain` 的响应也一样。前端 `renderQueueCard` 只用到 `id/name/size/status/error`，没有必要暴露服务端目录结构。建议在 API 层映射成精简 DTO（或给 `Path` 加 `json:\"-\"` 并保证内部序列化仍需要它时单独处理）后再回包。"
+ },
+ {
+  "sev": "low",
+  "cat": "maintainability",
+  "path": "web/style.css",
+  "lines": "1062-1062",
+  "content": "`.icon-btn` 与 `.theme-toggle` 在 web/ 全库都没有使用点（顶栏主题按钮是 `.btn.icon.ghost` + `#top-theme-btn`/`#login-theme-btn`），同一块里的 `.badge.clickable`（第 1078、1080 行）也不会被生成——项目里 `.clickable` 只加在 `.ask-source`/`.recent-item`/`.today-item` 上，badge 永远不带这个类。这三条是新增的死规则，既不会命中也不会影响命中区，建议删除或替换为实际存在的选择器。"
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/app.js",
+  "lines": "128-128",
+  "content": "chip 渲染时用的是 `list` 快照，点击时却按索引重新读一次 localStorage。`saveServerEntry` 是 `unshift` 插入，会让所有旧下标前移（例如另一个标签页刚登录成功写入新条目），此时点击 chip 会填入错误的「服务端 + 用户名」组合，甚至把密码提交到错误服务端。建议渲染时直接把条目绑进闭包或写成 `data-server`/`data-username`，不要用会漂移的数组下标回查。"
+ },
+ {
+  "sev": "low",
+  "cat": "bug",
+  "path": "web/view-files.js",
+  "lines": "457-457",
+  "content": "入队实际上是把同一个文件完整再上传一遍到网关，但这里没有传 `onProgress`：进度条会停在失败前的百分比，状态列一直是“上传中…”，而 `apiUploadTo` 的 xhr.timeout 是 30 分钟，大文件/慢链路下看起来就像卡死。建议传入进度回调复用同一个进度条，或在发请求前先把状态改为“正在入队…”以区分。"
+ }
+]

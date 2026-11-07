@@ -1059,7 +1059,6 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .topbar { height: 52px; padding: 0 12px; gap: 8px; }
   .page-title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .conn-pill { height: 30px; padding: 0 10px; font-size: 12px; gap: 7px; }
-  .icon-btn, .theme-toggle { width: 40px; height: 40px; }
 
   /* —— 触控目标：按钮 / 输入框 / 复选框 ≥40px —— */
   .btn { min-height: 40px; }
@@ -1070,17 +1069,16 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .search-box input { height: 40px; }
   .hero-ask-input { height: 42px; }
   .hero-ask-btn { height: 42px; min-height: 42px; padding: 0 16px; }
-  .checkbox input, .sel-cell input {
-    width: 40px; height: 40px; padding: 9px; margin: 0; flex: none;
+  .sel-cell input {
+    width: 40px; height: 40px; margin: 0; flex: none;
   }
-  .checkbox { gap: 6px; }
-  /* 小圆点/徽章：透明外扩命中区，整体 ≥40px */
-  .task-dot, .today-dot, .badge.clickable, .chip, .crumb { position: relative; }
+  /* 小圆点：透明外扩命中区 */
+  .task-dot, .today-dot { position: relative; }
   .task-dot::after, .today-dot::after { content: ''; position: absolute; inset: -12px; }
-  .badge.clickable::after, .chip::after { content: ''; position: absolute; inset: -9px -6px; }
-  .crumb::after { content: ''; position: absolute; inset: -10px -3px; }
+  /* 交互元素直接加大（外扩 ::after 会被 overflow:hidden 裁掉，不顶用） */
+  .crumb { min-height: 36px; padding: 6px 10px; }
   button, .side-item, .crumb, .note-item, .kb-item, .cal-day,
-  .ev-item, .today-item, .recent-item, .task-item, label.checkbox {
+  .ev-item, .today-item, .recent-item, .task-item {
     touch-action: manipulation;
   }
   /* 输入字号 ≥16px，避免 iOS 聚焦自动放大 */
@@ -1183,4 +1181,34 @@ table.tbl { width: 100%; border-collapse: collapse; }
 
   .notes-list-pane { max-height: 260px; }
   .kb-panel, .nb-panel { max-height: 190px; }
+}
+
+/* —— 上传队列（设置页） —— */
+.queue-list { display: flex; flex-direction: column; gap: 8px; }
+.queue-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel);
+}
+.queue-item-main { flex: 1; min-width: 0; }
+.queue-item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 768px) {
+  .queue-item { flex-wrap: wrap; }
+  .queue-item-main { flex: 1 1 100%; }
+}
+
+/* —— 服务端列表芯片（登录页可点按钮）与 chip 组 —— */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.srv-chip {
+  display: inline-flex; align-items: center;
+  max-width: 100%; min-height: 34px; padding: 6px 12px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel); color: var(--text-2);
+  font-size: 12.5px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.srv-chip:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 768px) {
+  .srv-chip { min-height: 40px; font-size: 13px; }
 }

@@ -97,9 +97,9 @@ type Announcement struct {
 // UploadQueueItem 离线/失败上传队列条目（文件存 data/queue/，恢复后自动续传）。
 type UploadQueueItem struct {
 	ID        string `json:"id"`
-	UserID    string `json:"user_id"` // 归属用户（续传记账用）
-	Name      string `json:"name"`    // 上传文件名
-	Path      string `json:"path"`    // 队列目录内文件绝对路径
+	UserID    string `json:"user_id,omitempty"` // 归属用户（续传记账用；对外视图剥掉）
+	Name      string `json:"name"`              // 上传文件名
+	Path      string `json:"path,omitempty"`    // 队列目录内文件绝对路径（绝不外发）
 	Size      int64  `json:"size"`
 	KBID      string `json:"kb_id"`
 	FolderID  string `json:"folder_id,omitempty"`
@@ -592,6 +592,14 @@ func (s *Store) SyncMerge(tasks []Task, events []Event, tombs map[string]int64) 
 		}
 		i++
 	}
+	// 公告删除同步（服务端删除的公告经墓碑下发清理）
+	for i := 0; i < len(s.d.Announcements); {
+		if ts, ok := s.d.Tombstones["ann:"+s.d.Announcements[i].ID]; ok && ts >= s.d.Announcements[i].UpdatedAt {
+			s.d.Announcements = append(s.d.Announcements[:i], s.d.Announcements[i+1:]...)
+			continue
+		}
+		i++
+	}
 	adoptT := 0
 	for _, t := range tasks {
 		if t.ID == "" {
@@ -716,8 +724,8 @@ func (s *Store) AllIMAAccounts() []OwnedAccount {
 
 // --- 上传队列 ---
 
-// AddQueueItem 入队（调用方负责把文件放进队列目录）。
-func (s *Store) AddQueueItem(it UploadQueueItem) UploadQueueItem {
+// AddQueueItem 入队（调用方负责把文件放进队列目录）。落盘失败必须让调用方知道。
+func (s *Store) AddQueueItem(it UploadQueueItem) (UploadQueueItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if it.ID == "" {
@@ -729,8 +737,7 @@ func (s *Store) AddQueueItem(it UploadQueueItem) UploadQueueItem {
 	}
 	it.UpdatedAt = now
 	s.d.UploadQueue = append(s.d.UploadQueue, it)
-	_ = s.saveLocked()
-	return it
+	return it, s.saveLocked()
 }
 
 // ListQueue 队列快照（含全部状态）。
@@ -968,6 +975,7 @@ func (s *Store) DeleteAnnouncement(id string) error {
 	for i := range s.d.Announcements {
 		if s.d.Announcements[i].ID == id {
 			s.d.Announcements = append(s.d.Announcements[:i], s.d.Announcements[i+1:]...)
+			s.setTombstoneLocked("ann:"+id, time.Now().Unix())
 			return s.saveLocked()
 		}
 	}

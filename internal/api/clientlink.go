@@ -263,6 +263,7 @@ func (l *ClientLink) SyncNow() error {
 			AskModel   string `json:"ask_model"`
 		} `json:"settings"`
 		Tombstones map[string]int64 `json:"tombstones"`
+		ServerTime int64            `json:"server_time"`
 	}
 	if err := json.Unmarshal(envelope.Data, &pull); err != nil {
 		return fmt.Errorf("同步拉取失败：%v", err)
@@ -297,7 +298,12 @@ func (l *ClientLink) SyncNow() error {
 		st.AskBaseURL = pull.Settings.AskBaseURL
 		st.AskAPIKey = pull.Settings.AskAPIKey
 		st.AskModel = pull.Settings.AskModel
-		st.ClientLastSync = time.Now().Unix()
+		// since 游标用服务端时钟（减 1s 重叠窗口），避免本地与服务端时钟偏差漏项
+		sts := pull.ServerTime
+		if sts <= 0 {
+			sts = time.Now().Unix()
+		}
+		st.ClientLastSync = sts - 1
 		return nil
 	}); err != nil {
 		return err
@@ -347,6 +353,11 @@ func (l *ClientLink) muLockConnected() bool {
 // persistSession 把服务端会话写入本地设置（重启免重登）。
 func (l *ClientLink) persistSession(username, sid string) {
 	_ = l.s.Store.UpdateSettings(func(st *store.Settings) error {
+		if st.ClientServerURL != l.serverURL {
+			// 换服务端：同步游标归零，全量重拉
+			st.ClientLastSync = 0
+			st.ClientActivitySync = 0
+		}
 		st.ClientServerURL = l.serverURL
 		st.ClientSession = sid
 		st.ClientSessionUser = username

@@ -90,13 +90,16 @@ async function loadIaAccounts() {
 /* ============ 多服务端列表（本地记住，一键填入） ============ */
 function loadServerEntries() {
   try {
-    return JSON.parse(localStorage.getItem('imahub_servers') || '[]') || [];
+    const v = JSON.parse(localStorage.getItem('imahub_servers') || '[]');
+    return Array.isArray(v) ? v.filter(function (x) { return x && x.server; }) : [];
   } catch (e) {
     return [];
   }
 }
 
 function saveServerEntry(server, username) {
+  // 地址留空是文档化默认路径：回落到实际生效地址，否则最常见的登录流程存不上
+  if (!server && state.serverInfo && state.serverInfo.server) server = state.serverInfo.server;
   if (!server) return;
   const list = loadServerEntries().filter(function (x) {
     return !(x.server === server && x.username === username);
@@ -119,13 +122,14 @@ function renderServerChips(srvField) {
     box.innerHTML = '';
     return;
   }
-  box.innerHTML = '<div class="chips" style="margin-top:6px">' + list.map(function (x, i) {
-    return '<button type="button" class="chip" data-srv-idx="' + i + '" title="' + escapeHtml(x.server) + '">' +
+  box.innerHTML = '<div class="chips">' + list.map(function (x, i) {
+    return '<button type="button" class="srv-chip" data-srv-idx="' + i + '" title="' + escapeHtml(x.server) + '">' +
       escapeHtml(x.server) + (x.username ? ' · ' + escapeHtml(x.username) : '') + '</button>';
   }).join('') + '</div>';
-  $$('#auth-server-list .chip').forEach(function (el) {
+  $$('#auth-server-list .srv-chip').forEach(function (el) {
     el.addEventListener('click', function () {
-      const x = loadServerEntries()[Number(el.getAttribute('data-srv-idx'))];
+      // 用渲染快照定位，避免 localStorage 下标漂移填错服务端
+      const x = list[Number(el.getAttribute('data-srv-idx'))];
       if (!x) return;
       $('#auth-server').value = x.server;
       $('#auth-username').value = x.username || '';

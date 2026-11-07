@@ -111,9 +111,12 @@ async function renderQueueCard(root) {
       try {
         await apiPost('/api/queue/' + encodeURIComponent(id) + '/retry', {});
         await renderQueueCard(root);
+        setTimeout(function () { renderQueueCard(root); }, 3000); // 续传异步执行，稍后回看出结果
       } catch (e) { retry.disabled = false; }
     });
     del.addEventListener('click', async function () {
+      const go = await confirmDialog('删除该排队文件？', { okText: '删除', danger: true });
+      if (!go) return;
       try {
         await apiDel('/api/queue/' + encodeURIComponent(id));
         await renderQueueCard(root);
@@ -124,9 +127,10 @@ async function renderQueueCard(root) {
   drain.addEventListener('click', async function () {
     drain.disabled = true;
     try {
-      const r = await apiPost('/api/queue/drain', {});
-      toast('续传 ' + (r.sent || 0) + ' 个', 'success');
+      await apiPost('/api/queue/drain', {});
+      toast('已开始续传', 'success');
       await renderQueueCard(root);
+      setTimeout(function () { renderQueueCard(root); }, 3000);
     } catch (e) { drain.disabled = false; }
   });
 }

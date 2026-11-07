@@ -64,7 +64,7 @@ func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request, u *store
 		}
 	}
 	anns := []store.Announcement{}
-	for _, a := range s.Store.ListAnnouncements(50) {
+	for _, a := range s.Store.ListAnnouncements(200) { // 窗口取大些，防旧建新改的公告漏同步
 		if a.UpdatedAt > since {
 			anns = append(anns, a)
 		}

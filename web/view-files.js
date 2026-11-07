@@ -622,6 +622,7 @@ function openUploadModal(presetFiles) {
         const btn = $('#up-start', root);
         btn.disabled = true;
         let ok = 0, fail = 0, queued = 0;
+        const queuedIdx = [];
         const usedAccounts = [];
         const archiveFailures = [];
         for (let i = 0; i < queue.length; i++) {
@@ -670,18 +671,26 @@ function openUploadModal(presetFiles) {
                 }
               }
             }
-            if (e.code === -1 && await queueUploadFallback(queue[i], uploadFields(false))) {
-              status.textContent = '已排队，恢复后自动传';
-              status.className = 'up-status badge warn';
-              queued++;
-            } else {
-              itemEl.classList.add('fail');
-              status.textContent = '失败：' + (e.message || '上传失败');
-              status.className = 'up-status badge danger';
-              fail++;
+            const permanent = isDuplicateError(e) || /不支持的文件类型|超过大小上限|文件名无效/.test(e.message || '');
+            if (!permanent) {
+              status.textContent = '正在入队…';
+              if (await queueUploadFallback(queue[i], uploadFields(false))) {
+                status.textContent = '已排队，恢复后自动传';
+                status.className = 'up-status badge warn';
+                queued++;
+                queuedIdx.push(i);
+                continue;
+              }
             }
+            itemEl.classList.add('fail');
+            status.textContent = '失败：' + (e.message || '上传失败');
+            status.className = 'up-status badge danger';
+            fail++;
           }
         }
+        // 已入队条目移出本次列表，防「再点一次」重复入队/重复上传
+        for (let j = queuedIdx.length - 1; j >= 0; j--) queue.splice(queuedIdx[j], 1);
+        if (queuedIdx.length) renderQueue();
         btn.disabled = false;
         toast('上传完成：成功 ' + ok + ' 个' + (fail ? '，失败 ' + fail + ' 个' : '') +
           (queued ? '，排队 ' + queued + ' 个' : '') +
