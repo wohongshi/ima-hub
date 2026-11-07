@@ -539,7 +539,7 @@ function openUploadModal(presetFiles) {
       '    <option value="auto">自动分配到各账号（扩大容量，推荐）</option>' +
       '    <option value="manual"' + (filesState.kbs.length ? '' : ' disabled') + '>指定知识库</option>' +
       '  </select>' +
-      '  <div class="hint" id="up-mode-hint">服务端会在各账号间轮询分配，存入每个账号配置的「默认上传知识库」，总容量为所有账号之和。</div>' +
+      '  <div class="hint" id="up-mode-hint">自动轮询分配账号，存入各账号的「默认上传知识库」</div>' +
       '</div>' +
       '<div id="up-target">' +
       '  <div class="form-row">' +
@@ -550,7 +550,7 @@ function openUploadModal(presetFiles) {
       '<div class="field">' +
       '  <label>选择文件（可多选，支持拖拽到页面任意位置）</label>' +
       '  <input class="input" type="file" id="up-files" multiple style="padding:7px 10px;height:auto">' +
-      '  <div class="hint">大小限制：Excel / TXT / Xmind / MD / HTML 10MB；图片 30MB；EPUB 50MB；PDF / Word / PPT / 音频等 200MB。<strong>支持 zip / 7z / rar 自动解压上传</strong>（包内文件逐个入库，目录层级并入文件名）。同名文件会提示是否覆盖。</div>' +
+      '  <div class="hint">大小限制：Excel / TXT / Xmind / MD / HTML 10MB；图片 30MB；EPUB 50MB；PDF / Word / PPT / 音频等 200MB。支持 zip / 7z / rar 解压上传；同名文件提示覆盖。</div>' +
       '</div>' +
       '<div class="upl-list" id="up-list"></div>',
     footer:

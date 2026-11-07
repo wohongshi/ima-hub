@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"imahub/internal/auth"
 	"imahub/internal/ima"
@@ -17,7 +18,7 @@ import (
 	"imahub/internal/store"
 )
 
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 type Server struct {
 	Store      *store.Store
@@ -25,6 +26,10 @@ type Server struct {
 	TmpDir     string
 	MCP        http.Handler  // 可选：挂载到 /mcp
 	Scanner    *scan.Scanner // 知识库扫描引擎
+
+	// Mode "serve"（默认，全功能服务端）| "client"（客户端：直连 + 离线同步）
+	Mode string
+	Link *ClientLink // 客户端模式的服务端链路
 
 	rrCounters sync.Map // userID -> *int64，上传自动分配轮询计数
 }
@@ -124,35 +129,46 @@ func (s *Server) requireAdmin(next func(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-// resolveImaAccount 解析团队共享 ima 账号（知识库数据全团队互通）。
-// accountID 空/"default" → 第一个团队账号；否则按 id 或名称匹配；
-// 团队无账号时回落服务端默认凭证（虚拟账号 id "default"）。
-func (s *Server) resolveImaAccount(_ *store.User, accountID string) (*store.IMAAccount, error) {
-	pool := s.Store.GetTeamAccounts()
-	if len(pool) > 0 {
-		if accountID == "" || accountID == "default" {
-			a := pool[0]
-			return &a, nil
-		}
-		for _, a := range pool {
-			if a.ID == accountID || a.Name == accountID {
-				ac := a
-				return &ac, nil
+// resolveImaAccount 解析 ima 账号：成员自有账号优先，其次团队公共池/服务端默认；
+// accountID 可为账号 id、名称或归属用户名（团队内容访问）。
+func (s *Server) resolveImaAccount(u *store.User, accountID string) (*store.IMAAccount, error) {
+	all := s.Store.AllIMAAccounts()
+	ownFirst := func() *store.IMAAccount {
+		if u != nil {
+			for i := range all {
+				if all[i].Source == "user" && all[i].OwnerID == u.ID {
+					a := all[i].IMAAccount
+					return &a
+				}
 			}
 		}
-		return nil, fmt.Errorf("IMA 账号不存在: %s", accountID)
-	}
-	st := s.Store.GetSettings()
-	if st.DefaultIMAClientID != "" && st.DefaultIMAAPIKey != "" {
-		if accountID != "" && accountID != "default" {
-			return nil, fmt.Errorf("IMA 账号不存在: %s", accountID)
+		if len(all) > 0 {
+			a := all[0].IMAAccount
+			return &a
 		}
-		return &store.IMAAccount{ID: "default", Name: "服务端默认账号", ClientID: st.DefaultIMAClientID, APIKey: st.DefaultIMAAPIKey}, nil
+		return nil
 	}
-	return nil, errors.New("团队尚未配置 IMA 账号（组长可在设置页添加，或配置服务端默认凭证）")
+	if accountID == "" {
+		if a := ownFirst(); a != nil {
+			return a, nil
+		}
+		return nil, errors.New("尚未配置 IMA 账号（设置页绑定自己的 key）")
+	}
+	for i := range all {
+		if all[i].ID == accountID || all[i].Name == accountID || all[i].Owner == accountID {
+			a := all[i].IMAAccount
+			return &a, nil
+		}
+	}
+	if accountID == "default" {
+		if a := ownFirst(); a != nil {
+			return a, nil
+		}
+	}
+	return nil, fmt.Errorf("IMA 账号不存在: %s", accountID)
 }
 
-// effectiveIma 团队账号池优先，回落服务端默认凭证。
+// effectiveIma 成员自有账号优先，回落团队/默认凭证。
 func (s *Server) effectiveIma(u *store.User, accountID string) (*ima.Client, error) {
 	a, err := s.resolveImaAccount(u, accountID)
 	if err != nil {
@@ -161,20 +177,21 @@ func (s *Server) effectiveIma(u *store.User, accountID string) (*ima.Client, err
 	return ima.New(a.ClientID, a.APIKey, s.ImaBaseURL), nil
 }
 
-// poolAccounts 团队共享账号池全部账号（空时回落服务端默认凭证）。
-func (s *Server) poolAccounts(_ *store.User) []store.IMAAccount {
-	pool := s.Store.GetTeamAccounts()
-	if len(pool) > 0 {
-		return pool
+// poolAccounts 账号池：成员自有排前（上传默认落自己的号），再团队公共/服务端默认。
+func (s *Server) poolAccounts(u *store.User) []store.IMAAccount {
+	all := s.Store.AllIMAAccounts()
+	out := make([]store.IMAAccount, 0, len(all))
+	for i := range all {
+		if u != nil && all[i].Source == "user" && all[i].OwnerID == u.ID {
+			out = append(out, all[i].IMAAccount)
+		}
 	}
-	st := s.Store.GetSettings()
-	if st.DefaultIMAClientID != "" && st.DefaultIMAAPIKey != "" {
-		return []store.IMAAccount{{
-			ID: "default", Name: "服务端默认账号",
-			ClientID: st.DefaultIMAClientID, APIKey: st.DefaultIMAAPIKey,
-		}}
+	for i := range all {
+		if u == nil || !(all[i].Source == "user" && all[i].OwnerID == u.ID) {
+			out = append(out, all[i].IMAAccount)
+		}
 	}
-	return nil
+	return out
 }
 
 // clientFor 构造指定账号的 ima 客户端。
@@ -216,6 +233,10 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if s.Mode == "client" {
+		writeErr(w, http.StatusForbidden, 403, "客户端模式无需初始化")
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -309,6 +330,10 @@ func publicUser(u *store.User) map[string]any {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if s.Mode == "client" {
+		s.handleClientLogin(w, r)
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -340,11 +365,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.Mode == "client" {
+		// 客户端登出 = 断开服务端会话（地址保留，下次一键重连）
+		_ = s.Store.UpdateSettings(func(st *store.Settings) error {
+			st.ClientSession = ""
+			st.ClientSessionUser = ""
+			return nil
+		})
+	}
 	http.SetCookie(w, &http.Cookie{Name: sidCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	writeOK(w, nil)
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if s.Mode == "client" {
+		writeErr(w, http.StatusForbidden, 403, "客户端模式请用服务端账号登录")
+		return
+	}
 	if !s.Store.GetSettings().AllowRegister {
 		writeErr(w, http.StatusForbidden, 403, "本站暂未开放注册")
 		return
@@ -368,34 +405,32 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{"user": publicUser(u)})
 }
 
-// teamAccountViews 团队共享账号池的对外视图（含服务端默认兜底）。
-func (s *Server) teamAccountViews() ([]map[string]any, string) {
-	pool := s.Store.GetTeamAccounts()
-	accounts := make([]map[string]any, 0, len(pool)+1)
+// teamAccountViews 全部账号的对外视图（成员自有 + 团队公共 + 服务端默认，带归属）。
+func (s *Server) teamAccountViews(u *store.User) ([]map[string]any, string) {
+	all := s.Store.AllIMAAccounts()
+	accounts := make([]map[string]any, 0, len(all))
 	defaultID := ""
-	if len(pool) > 0 {
-		defaultID = pool[0].ID
-		for i := range pool {
-			a := publicAccount(&pool[i])
-			a["source"] = "team"
-			accounts = append(accounts, a)
+	for i := range all {
+		a := publicAccount(&all[i].IMAAccount)
+		src := all[i].Source
+		if src == "default" {
+			src = "server_default"
 		}
-	} else {
-		st := s.Store.GetSettings()
-		if st.DefaultIMAClientID != "" && st.DefaultIMAAPIKey != "" {
-			defaultID = "default"
-			accounts = append(accounts, map[string]any{
-				"id": "default", "name": "服务端默认账号",
-				"client_id_preview": accountPreview(st.DefaultIMAClientID),
-				"bound":             true, "source": "server_default",
-			})
+		a["source"] = src
+		a["owner"] = all[i].Owner
+		if u != nil {
+			a["own"] = all[i].OwnerID == u.ID
 		}
+		if defaultID == "" {
+			defaultID = all[i].ID
+		}
+		accounts = append(accounts, a)
 	}
 	return accounts, defaultID
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u *store.User) {
-	accounts, defaultID := s.teamAccountViews()
+	accounts, defaultID := s.teamAccountViews(u)
 	writeOK(w, map[string]any{
 		"user": publicUser(u),
 		"ima": map[string]any{
@@ -446,12 +481,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, u 
 	writeOK(w, nil)
 }
 
-// handleBindIma 新增团队 ima 账号（组长维护团队共享账号池）。
+// handleBindIma 成员自绑 ima 账号（1 人 1 号；重复提交即更新）。
 func (s *Server) handleBindIma(w http.ResponseWriter, r *http.Request, u *store.User) {
 	var req struct {
-		Name     string `json:"name"`
-		ClientID string `json:"client_id"`
-		APIKey   string `json:"api_key"`
+		Name       string `json:"name"`
+		ClientID   string `json:"client_id"`
+		APIKey     string `json:"api_key"`
+		UploadKBID string `json:"upload_kb_id"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -459,28 +495,53 @@ func (s *Server) handleBindIma(w http.ResponseWriter, r *http.Request, u *store.
 	req.Name = strings.TrimSpace(req.Name)
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.UploadKBID = strings.TrimSpace(req.UploadKBID)
 	if req.ClientID == "" || req.APIKey == "" {
 		writeBizErr(w, "Client ID 与 API Key 均不能为空")
 		return
 	}
 	if req.Name == "" {
-		req.Name = fmt.Sprintf("账号 %d", len(s.Store.GetTeamAccounts())+1)
+		req.Name = u.Username + " 的 ima"
 	}
-	acc, err := s.Store.AddTeamAccount(store.IMAAccount{
-		Name:     req.Name,
-		ClientID: req.ClientID,
-		APIKey:   req.APIKey,
-	})
-	if err != nil {
-		writeBizErr(w, err.Error())
+	var saved store.IMAAccount
+	if err := s.Store.UpdateUser(u.ID, func(x *store.User) error {
+		if len(x.IMAAccounts) > 0 {
+			saved = x.IMAAccounts[0]
+			saved.Name = req.Name
+			saved.ClientID = req.ClientID
+			saved.APIKey = req.APIKey
+			if req.UploadKBID != "" {
+				saved.UploadKBID = req.UploadKBID
+			}
+			x.IMAAccounts[0] = saved
+		} else {
+			saved = store.IMAAccount{
+				ID: "u" + store.RandomToken()[:11], Name: req.Name,
+				ClientID: req.ClientID, APIKey: req.APIKey,
+				UploadKBID: req.UploadKBID, Owner: u.Username,
+				CreatedAt: time.Now().Unix(),
+			}
+			x.IMAAccounts = []store.IMAAccount{saved}
+		}
+		return nil
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	writeOK(w, map[string]any{"account": publicAccount(&acc)})
+	writeOK(w, map[string]any{"account": publicAccount(&saved)})
 }
 
-// handleUpdateImaAccount 更新团队账号（PATCH /api/me/ima/{id}）。
+// handleUpdateImaAccount 更新自己的 ima 账号（PATCH /api/me/ima/{id}）；管理员可带 user_id 代管成员的号。
 func (s *Server) handleUpdateImaAccount(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
+	targetID := u.ID
+	if q := r.URL.Query().Get("user_id"); q != "" {
+		if u.Role != "admin" {
+			writeErr(w, http.StatusForbidden, 403, "仅管理员可修改他人账号")
+			return
+		}
+		targetID = q
+	}
 	var req struct {
 		Name       *string `json:"name"`
 		ClientID   *string `json:"client_id"`
@@ -491,21 +552,28 @@ func (s *Server) handleUpdateImaAccount(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	var updated *store.IMAAccount
-	err := s.Store.UpdateTeamAccount(id, func(a *store.IMAAccount) error {
-		if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
-			a.Name = strings.TrimSpace(*req.Name)
+	err := s.Store.UpdateUser(targetID, func(x *store.User) error {
+		for i := range x.IMAAccounts {
+			if x.IMAAccounts[i].ID == id {
+				a := &x.IMAAccounts[i]
+				if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+					a.Name = strings.TrimSpace(*req.Name)
+				}
+				if req.ClientID != nil && strings.TrimSpace(*req.ClientID) != "" {
+					a.ClientID = strings.TrimSpace(*req.ClientID)
+				}
+				if req.APIKey != nil && strings.TrimSpace(*req.APIKey) != "" {
+					a.APIKey = strings.TrimSpace(*req.APIKey)
+				}
+				if req.UploadKBID != nil {
+					a.UploadKBID = strings.TrimSpace(*req.UploadKBID)
+				}
+				cp := *a
+				updated = &cp
+				return nil
+			}
 		}
-		if req.ClientID != nil && strings.TrimSpace(*req.ClientID) != "" {
-			a.ClientID = strings.TrimSpace(*req.ClientID)
-		}
-		if req.APIKey != nil && strings.TrimSpace(*req.APIKey) != "" {
-			a.APIKey = strings.TrimSpace(*req.APIKey)
-		}
-		if req.UploadKBID != nil {
-			a.UploadKBID = strings.TrimSpace(*req.UploadKBID)
-		}
-		updated = a
-		return nil
+		return store.ErrNotFound
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -518,26 +586,49 @@ func (s *Server) handleUpdateImaAccount(w http.ResponseWriter, r *http.Request, 
 	writeOK(w, map[string]any{"account": publicAccount(updated)})
 }
 
-// handleUnbindIma 删除团队账号（?id= 指定；不带 id 清空全部）。
+// handleUnbindIma 解绑自己的 ima 账号（?id= 指定；不带 id 清空全部；管理员可带 user_id 代管）。
 func (s *Server) handleUnbindIma(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.URL.Query().Get("id")
-	if id == "" {
-		for _, a := range s.Store.GetTeamAccounts() {
-			_ = s.Store.DeleteTeamAccount(a.ID)
-		}
-		writeOK(w, nil)
-		return
+	targetID := u.ID
+	if q := r.URL.Query().Get("user_id"); q != "" && u.Role == "admin" {
+		targetID = q
 	}
-	if err := s.Store.DeleteTeamAccount(id); err != nil {
+	if err := s.Store.UpdateUser(targetID, func(x *store.User) error {
+		if id == "" {
+			x.IMAAccounts = nil
+			return nil
+		}
+		for i := range x.IMAAccounts {
+			if x.IMAAccounts[i].ID == id {
+				x.IMAAccounts = append(x.IMAAccounts[:i], x.IMAAccounts[i+1:]...)
+				return nil
+			}
+		}
+		return store.ErrNotFound
+	}); err != nil {
 		writeErr(w, http.StatusNotFound, 404, "ima 账号不存在")
 		return
 	}
 	writeOK(w, nil)
 }
 
+// handleImaKeys 密钥分发：返回全部账号完整凭证（架构决策：成员免授权取用）。
+func (s *Server) handleImaKeys(w http.ResponseWriter, r *http.Request, u *store.User) {
+	all := s.Store.AllIMAAccounts()
+	keys := make([]map[string]any, 0, len(all))
+	for i := range all {
+		keys = append(keys, map[string]any{
+			"id": all[i].ID, "name": all[i].Name, "owner": all[i].Owner, "owner_id": all[i].OwnerID,
+			"source": all[i].Source, "client_id": all[i].ClientID, "api_key": all[i].APIKey,
+			"upload_kb_id": all[i].UploadKBID,
+		})
+	}
+	writeOK(w, map[string]any{"keys": keys})
+}
+
 // handleImaAccounts 团队共享 ima 账号清单（全员可见，数据互通）。
 func (s *Server) handleImaAccounts(w http.ResponseWriter, r *http.Request, u *store.User) {
-	accounts, defaultID := s.teamAccountViews()
+	accounts, defaultID := s.teamAccountViews(u)
 	writeOK(w, map[string]any{"accounts": accounts, "default_id": defaultID})
 }
 
@@ -728,9 +819,21 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	st := s.Store.GetSettings()
-	writeOK(w, map[string]any{
+	mode := s.Mode
+	if mode == "" {
+		mode = "serve"
+	}
+	out := map[string]any{
 		"site_name":      st.SiteName,
 		"version":        Version,
 		"allow_register": st.AllowRegister,
-	})
+		"mode":           mode,
+	}
+	if mode == "client" && s.Link != nil {
+		connected, server, lastSync := s.Link.Status()
+		out["connected"] = connected
+		out["server"] = server
+		out["last_sync"] = lastSync
+	}
+	writeOK(w, out)
 }

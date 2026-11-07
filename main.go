@@ -27,10 +27,23 @@ import (
 var webFS embed.FS
 
 func main() {
-	addr := flag.String("addr", ":8090", "监听地址（如 :8090、0.0.0.0:8080）")
-	dataDir := flag.String("data", "./data", "数据目录（用户/会话/设置）")
-	imaBase := flag.String("ima-base-url", "", "ima 开放平台地址（默认 https://ima.qq.com，测试用）")
-	flag.Parse()
+	// 双模式：imahub serve（默认，全功能服务端）| imahub client（组员客户端：直连 + 离线同步）
+	mode := "serve"
+	args := os.Args[1:]
+	if len(args) > 0 && (args[0] == "client" || args[0] == "serve") {
+		mode = args[0]
+		args = args[1:]
+	}
+	defaultAddr := ":8090"
+	if mode == "client" {
+		defaultAddr = "127.0.0.1:8090" // 客户端默认只听本机
+	}
+	fl := flag.NewFlagSet("imahub", flag.ExitOnError)
+	addr := fl.String("addr", defaultAddr, "监听地址（如 :8090、127.0.0.1:8090）")
+	dataDir := fl.String("data", "./data", "数据目录（用户/会话/设置）")
+	imaBase := fl.String("ima-base-url", "", "ima 开放平台地址（默认 https://ima.qq.com，测试用）")
+	server := fl.String("server", "", "客户端模式：服务端地址（可留空，页面里填）")
+	fl.Parse(args)
 
 	if *imaBase == "" {
 		*imaBase = "https://ima.qq.com"
@@ -46,6 +59,16 @@ func main() {
 		ImaBaseURL: *imaBase,
 		TmpDir:     filepath.Join(*dataDir, "tmp"),
 		Scanner:    scan.Open(*dataDir, st, *imaBase),
+		Mode:       mode,
+	}
+	if mode == "client" {
+		if *server != "" {
+			_ = st.UpdateSettings(func(s *store.Settings) error {
+				s.ClientServerURL = *server
+				return nil
+			})
+		}
+		srv.Link = api.NewClientLink(srv)
 	}
 	srv.MCP = &mcp.Server{
 		Store:      st,
@@ -82,14 +105,25 @@ func main() {
 		if strings.HasPrefix(display, ":") {
 			display = "localhost" + display
 		}
-		log.Printf("ImaHub v%s 已启动: http://%s  (数据目录 %s)", api.Version, display, *dataDir)
-		if st.UserCount() == 0 {
+		log.Printf("ImaHub v%s [%s] 已启动: http://%s  (数据目录 %s)", api.Version, mode, display, *dataDir)
+		if mode == "client" {
+			_, serverURL, _ := srv.Link.Status()
+			if serverURL == "" {
+				log.Printf("客户端首连：打开页面填写服务端地址与账号")
+			}
+		} else if st.UserCount() == 0 {
 			log.Printf("首次使用：打开页面完成管理员初始化")
 		}
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("服务启动失败: %v", err)
 		}
 	}()
+
+	if mode == "client" {
+		stopSync := make(chan struct{})
+		go srv.Link.Run(stopSync) // 心跳 + 离线数据同步引擎
+		defer close(stopSync)
+	}
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)

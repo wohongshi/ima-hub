@@ -18,13 +18,18 @@ const PAGE_TITLES = {
   admin: '管理后台',
 };
 
+/* 是否客户端模式（双模式之一：serve | client） */
+function isClientMode() {
+  return !!(state.serverInfo && state.serverInfo.mode === 'client');
+}
+
 /* ============ 401 统一处理（api.js 回调） ============ */
 function onUnauthorized() {
   const appHidden = $('#app-view').classList.contains('hidden');
   state.user = null;
   state.me = null;
   if (!appHidden) toast('登录已过期，请重新登录', 'warn');
-  showLogin(state.needSetup ? 'setup' : 'login');
+  showLogin(isClientMode() ? 'login' : (state.needSetup ? 'setup' : 'login'));
 }
 
 /* ============ 主题 ============ */
@@ -84,6 +89,7 @@ async function loadIaAccounts() {
 
 /* ============ 登录 / 注册 / 初始化 ============ */
 function showLogin(mode) {
+  if (isClientMode()) mode = 'login'; // 客户端固定「连接服务端」，无注册 / 初始化
   state.authMode = mode || (state.needSetup ? 'setup' : 'login');
   $('#app-view').classList.add('hidden');
   $('#login-view').classList.remove('hidden');
@@ -110,7 +116,25 @@ function renderAuthForm() {
   const submit = $('#auth-submit');
   const pw2 = $('#auth-password2-field');
   const pw2Input = $('#auth-password2');
+  const srvField = $('#auth-server-field');
+  const srvInput = $('#auth-server');
   const allowRegister = !state.serverInfo || state.serverInfo.allow_register !== false;
+
+  if (isClientMode()) {
+    // 客户端模式：连接服务端（注册 / 初始化入口隐藏）
+    tabs.classList.add('hidden');
+    srvField.classList.remove('hidden');
+    if (!srvInput.value && state.serverInfo && state.serverInfo.server) srvInput.value = state.serverInfo.server;
+    title.textContent = '连接服务端';
+    sub.textContent = '登录服务端账号';
+    submit.textContent = '连 接';
+    pw2.classList.add('hidden');
+    pw2Input.required = false;
+    $('#auth-password').setAttribute('autocomplete', 'current-password');
+    mountIcons($('#login-view'));
+    return;
+  }
+  srvField.classList.add('hidden');
 
   if (mode === 'setup') {
     tabs.classList.add('hidden');
@@ -189,7 +213,9 @@ function bindAuthEvents() {
         renderAuthForm();
         $('#auth-password').value = '';
       } else {
-        await apiPost('/api/login', { username: username, password: password });
+        const loginBody = { username: username, password: password };
+        if (isClientMode()) loginBody.server = $('#auth-server').value.trim(); // 留空由服务端用上次地址
+        await apiPost('/api/login', loginBody);
         await refreshMe();
         showApp();
       }
@@ -229,10 +255,11 @@ async function showApp() {
   $('#side-username').textContent = u.username || '—';
   $('#side-userrole').textContent = u.role === 'admin' ? '管理员' : '普通用户';
   $('#side-avatar').textContent = (u.username || 'U').charAt(0).toUpperCase();
-  $('#nav-admin').classList.toggle('hidden', u.role !== 'admin');
+  $('#nav-admin').classList.toggle('hidden', u.role !== 'admin' || isClientMode());
 
   applyBranding();
   mountIcons();
+  startConnPoll();
 
   if (!location.hash || location.hash === '#/' || location.hash === '#') {
     location.hash = '#/home';
@@ -245,12 +272,12 @@ function route() {
   if ($('#app-view').classList.contains('hidden')) return;
   const hash = (location.hash || '#/home').replace(/^#\/?/, '');
   const name = (hash.split('?')[0] || 'home').split('/')[0] || 'home';
-  const routeName = PAGE_TITLES[name] ? name : 'home';
 
-  if (routeName === 'admin' && (!state.user || state.user.role !== 'admin')) {
+  if (name === 'admin' && (isClientMode() || !state.user || state.user.role !== 'admin')) {
     location.hash = '#/files';
     return;
   }
+  const routeName = PAGE_TITLES[name] ? name : 'home';
   state.route = routeName;
   $('#page-title').textContent = PAGE_TITLES[routeName];
   $$('.side-item').forEach(function (b) {
@@ -304,17 +331,58 @@ async function boot() {
 
   await refreshServerInfo();
   applyBranding();
-  try {
-    const st = await apiGet('/api/setup/status', { silent: true });
-    state.needSetup = !!st.need_setup;
-  } catch (e) { state.needSetup = false; }
+  if (isClientMode()) {
+    delete PAGE_TITLES.admin; // 客户端模式无管理后台
+    state.needSetup = false; // 初始化只在服务端做
+  } else {
+    try {
+      const st = await apiGet('/api/setup/status', { silent: true });
+      state.needSetup = !!st.need_setup;
+    } catch (e) { state.needSetup = false; }
+  }
 
   try {
     await refreshMe({ silent: true });
     showApp();
   } catch (e) {
-    showLogin(state.needSetup ? 'setup' : 'login');
+    showLogin(isClientMode() ? 'login' : (state.needSetup ? 'setup' : 'login'));
   }
+}
+
+/* ============ 客户端模式：服务端连接状态（30s 轮询，只刷标识） ============ */
+let connPollTimer = null;
+
+function setConnBadge(connected, server) {
+  const pill = $('#conn-pill');
+  if (!pill) return;
+  pill.classList.toggle('off', !connected);
+  const txt = $('#conn-text');
+  if (txt) txt.textContent = connected ? '已连接' : '离线';
+  pill.title = server ? ('服务端：' + server) : '服务端连接状态';
+}
+
+async function updateConnBadge() {
+  if (!isClientMode() || $('#app-view').classList.contains('hidden')) return;
+  try {
+    const st = await apiGet('/api/client/status', { silent: true });
+    if (state.serverInfo) {
+      state.serverInfo.connected = !!st.connected;
+      state.serverInfo.server = st.server || state.serverInfo.server;
+      state.serverInfo.last_sync = st.last_sync;
+    }
+    setConnBadge(!!st.connected, st.server);
+  } catch (e) {
+    setConnBadge(false);
+  }
+}
+
+function startConnPoll() {
+  const pill = $('#conn-pill');
+  if (!pill) return;
+  if (!isClientMode()) { pill.classList.add('hidden'); return; }
+  pill.classList.remove('hidden');
+  updateConnBadge();
+  if (!connPollTimer) connPollTimer = setInterval(updateConnBadge, 30000);
 }
 
 document.addEventListener('DOMContentLoaded', boot);

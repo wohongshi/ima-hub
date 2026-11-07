@@ -134,3 +134,23 @@ IMA 凭证优先级：用户本人绑定 > 服务端默认凭证；都没有则�
   - `ima_create_note` {content,folder_id?,folder_name?}
   - `ima_append_note` {note_id,content}
 - `tools/call` 返回 `content:[{type:"text",text:<JSON 字符串>}]`；业务错误时 `isError:true`。
+
+## v0.2.0 服务端/客户端架构
+
+账号模型：1 成员 1 个 ima 账号（成员自助配置），管理员纯管理；全部账号对全员可见（免授权分发 key）。
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | /api/me/ima-keys | 登录 | 全部账号完整凭证（id/name/owner/source/client_id/api_key/upload_kb_id） |
+| POST | /api/me/ima | 登录 | 自绑/更新我的 ima 账号（1 人 1 号）{name,client_id,api_key,upload_kb_id} |
+| PATCH | /api/me/ima/{id} | 登录 | 部分更新（管理员可带 ?user_id= 代管） |
+| DELETE | /api/me/ima?id= | 登录 | 解绑（不带 id 清空；管理员可带 ?user_id=） |
+| POST | /api/sync/push | 登录 | 客户端改动回传 {activities,tasks,events,tombstones}；任务/日程 LWW（UpdatedAt 决胜，删除墓碑压旧更新） |
+| GET | /api/sync/pull | 登录 | 拉取 {tasks,events,announcements,accounts,settings(ask_*),tombstones,server_time} |
+| POST | /api/client/sync | 登录 | 客户端立即同步（push+pull） |
+| GET | /api/client/status | 登录 | {connected,server,last_sync} |
+
+- accounts 项带 owner（归属用户名）、own（是否我的）、source（user|team|server_default）。
+- GET /api/server-info 增加 mode("serve"|"client")，client 模式带 connected/server/last_sync。
+- 客户端模式：POST /api/login 增加可选 server 字段（服务端地址）；/api/setup、/api/register 禁用；公告写接口返回 400（公告在服务端管理）。
+- 活动流水按 ID 幂等（同步重放不重复计）；删除任务/日程写 tombstones（"task:<id>"/"event:<id>" → unix 秒）。

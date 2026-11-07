@@ -44,6 +44,10 @@
       </div>
 
       <form id="auth-form" autocomplete="off">
+        <div class="field hidden" id="auth-server-field">
+          <label for="auth-server">服务端地址</label>
+          <input class="input mono" id="auth-server" name="server" placeholder="留空用上次" autocomplete="off">
+        </div>
         <div class="field">
           <label for="auth-username">用户名</label>
           <input class="input" id="auth-username" name="username" placeholder="请输入用户名" autocomplete="username" required>
@@ -102,6 +106,7 @@
       <button class="btn icon ghost hamburger" id="hamburger" title="菜单"><span data-icon="menu"></span></button>
       <div class="page-title" id="page-title">文件 / 知识库</div>
       <div class="spacer"></div>
+      <div class="conn-pill hidden" id="conn-pill" title="服务端连接状态"><span class="dot"></span><span id="conn-text">—</span></div>
       <button class="btn icon ghost" id="top-theme-btn" title="切换主题"><span data-icon="moon"></span></button>
     </header>
     <main class="content" id="view-root"></main>

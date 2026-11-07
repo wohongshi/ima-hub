@@ -21,12 +21,20 @@ func (s *Server) Handler() http.Handler {
 	// 个人
 	mux.HandleFunc("GET /api/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("POST /api/me/password", s.requireAuth(s.handleChangePassword))
-	// 团队账号池：全员只读，组长（admin）增删改
-	mux.HandleFunc("POST /api/me/ima", s.requireAdmin(s.handleBindIma))
-	mux.HandleFunc("PATCH /api/me/ima/{id}", s.requireAdmin(s.handleUpdateImaAccount))
-	mux.HandleFunc("DELETE /api/me/ima", s.requireAdmin(s.handleUnbindIma))
+
+	// ima 账号：成员自助（1 人 1 号），管理员可带 user_id 代管
+	mux.HandleFunc("POST /api/me/ima", s.requireAuth(s.handleBindIma))
+	mux.HandleFunc("PATCH /api/me/ima/{id}", s.requireAuth(s.handleUpdateImaAccount))
+	mux.HandleFunc("DELETE /api/me/ima", s.requireAuth(s.handleUnbindIma))
+	mux.HandleFunc("GET /api/me/ima-keys", s.requireAuth(s.handleImaKeys))
 	mux.HandleFunc("GET /api/me/mcp-token", s.requireAuth(s.handleMCPToken))
 	mux.HandleFunc("POST /api/me/mcp-token/rotate", s.requireAuth(s.handleRotateMCPToken))
+
+	// 离线同步（客户端）：改动回传 + 团队数据/分发 key 拉取
+	mux.HandleFunc("POST /api/sync/push", s.requireAuth(s.handleSyncPush))
+	mux.HandleFunc("GET /api/sync/pull", s.requireAuth(s.handleSyncPull))
+	mux.HandleFunc("POST /api/client/sync", s.requireAuth(s.handleClientSyncNow))
+	mux.HandleFunc("GET /api/client/status", s.requireAuth(s.handleClientStatus))
 
 	// 管理
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminUsers))

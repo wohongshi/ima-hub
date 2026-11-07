@@ -173,20 +173,11 @@ func (s *Scanner) run() {
 
 	// 收集团队共享账号池（知识库数据全团队互通）；空时回落服务端默认凭证
 	accs := []scanAccount{}
-	for _, a := range s.Store.GetTeamAccounts() {
+	for _, oa := range s.Store.AllIMAAccounts() {
 		accs = append(accs, scanAccount{
-			ID: a.ID, Name: a.Name,
-			Client: ima.New(a.ClientID, a.APIKey, s.BaseURL),
+			ID: oa.ID, Name: oa.Name,
+			Client: ima.New(oa.ClientID, oa.APIKey, s.BaseURL),
 		})
-	}
-	if len(accs) == 0 {
-		st := s.Store.GetSettings()
-		if st.DefaultIMAClientID != "" && st.DefaultIMAAPIKey != "" {
-			accs = append(accs, scanAccount{
-				ID: "default", Name: "服务端默认账号",
-				Client: ima.New(st.DefaultIMAClientID, st.DefaultIMAAPIKey, s.BaseURL),
-			})
-		}
 	}
 
 	s.mu.Lock()

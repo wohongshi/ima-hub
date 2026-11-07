@@ -37,20 +37,21 @@ type Server struct {
 	rrCounters sync.Map // userID -> *int64，上传自动分配轮询计数
 }
 
-// poolAccounts 团队共享账号池全部账号（空时回落服务端默认凭证）。
-func (s *Server) poolAccounts(_ *store.User) []store.IMAAccount {
-	pool := s.Store.GetTeamAccounts()
-	if len(pool) > 0 {
-		return pool
+// poolAccounts 账号池：成员自有优先，再团队缓存/服务端默认（上传分配、聚合遍历共用）。
+func (s *Server) poolAccounts(u *store.User) []store.IMAAccount {
+	all := s.Store.AllIMAAccounts()
+	out := make([]store.IMAAccount, 0, len(all))
+	for i := range all {
+		if u != nil && all[i].Source == "user" && all[i].OwnerID == u.ID {
+			out = append(out, all[i].IMAAccount)
+		}
 	}
-	st := s.Store.GetSettings()
-	if st.DefaultIMAClientID != "" && st.DefaultIMAAPIKey != "" {
-		return []store.IMAAccount{{
-			ID: "default", Name: "服务端默认账号",
-			ClientID: st.DefaultIMAClientID, APIKey: st.DefaultIMAAPIKey,
-		}}
+	for i := range all {
+		if u == nil || !(all[i].Source == "user" && all[i].OwnerID == u.ID) {
+			out = append(out, all[i].IMAAccount)
+		}
 	}
-	return nil
+	return out
 }
 
 // clientFor 构造指定账号的 ima 客户端。

@@ -194,6 +194,10 @@ func (s *Server) handleListAnnouncements(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if s.Mode == "client" {
+		writeBizErr(w, "公告在服务端管理")
+		return
+	}
 	var req struct {
 		Content string `json:"content"`
 	}
@@ -216,6 +220,10 @@ func (s *Server) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if s.Mode == "client" {
+		writeBizErr(w, "公告在服务端管理")
+		return
+	}
 	id := r.PathValue("id")
 	var req struct {
 		Content string `json:"content"`
@@ -244,6 +252,10 @@ func (s *Server) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleDeleteAnnouncement(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if s.Mode == "client" {
+		writeBizErr(w, "公告在服务端管理")
+		return
+	}
 	id := r.PathValue("id")
 	if err := s.Store.DeleteAnnouncement(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

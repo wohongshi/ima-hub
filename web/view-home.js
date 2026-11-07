@@ -164,7 +164,7 @@ function renderHomeHero() {
     '    <div class="hero-sub">容量池已就绪，随时开始整理你的知识库</div>' +
     summary +
     '    <div class="hero-ask">' +
-    '      <input class="hero-ask-input" id="hero-ask-input" placeholder="问问团队知识库…（自然语言，agent 级查询）" maxlength="200">' +
+    '      <input class="hero-ask-input" id="hero-ask-input" placeholder="问问团队知识库…" maxlength="200">' +
     '      <button class="btn hero-ask-btn" id="hero-ask-btn">' + icon('search', 15) + '提问</button>' +
     '    </div>' +
     '  </div>' +
@@ -436,9 +436,10 @@ async function loadAnnouncements() {
 function renderHomeAnnouncements(list) {
   const box = $('#home-announce');
   if (!box) return;
-  const isAdmin = (typeof state !== 'undefined' && state.user && state.user.role === 'admin');
+  // 客户端模式公告只读：发布 / 管理入口隐藏
+  const canManage = (typeof state !== 'undefined' && state.user && state.user.role === 'admin') && !isClientMode();
   const latest = list[0];
-  if (!latest && !isAdmin) {
+  if (!latest && !canManage) {
     box.classList.add('hidden');
     return;
   }
@@ -453,10 +454,10 @@ function renderHomeAnnouncements(list) {
       html += '<button class="btn sm ghost" id="ann-more">共 ' + list.length + ' 条</button>';
     }
   } else {
-    html += '<span class="announce-text muted">暂无公告' + (isAdmin ? '，点击右侧发布团队通知' : '') + '</span>';
+    html += '<span class="announce-text muted">暂无公告' + (canManage ? '，点右侧发布' : '') + '</span>';
   }
   html += '</div>';
-  if (isAdmin) {
+  if (canManage) {
     html += '<button class="btn sm" id="ann-manage">' + icon('edit', 13) + '公告管理</button>';
   }
   html += '</div>';
@@ -471,21 +472,22 @@ function renderHomeAnnouncements(list) {
 }
 
 function openAnnouncementModal(list, readOnly) {
-  const isAdmin = (typeof state !== 'undefined' && state.user && state.user.role === 'admin');
+  // 客户端模式公告只读（发布接口在服务端管理）
+  const canManage = (typeof state !== 'undefined' && state.user && state.user.role === 'admin') && !isClientMode();
   const rowsHtml = (list || []).map(function (a) {
     return '<div class="ann-item" data-id="' + escapeHtml(String(a.id)) + '">' +
       '<div class="ann-item-body"><div>' + escapeHtml(a.content) + '</div>' +
       '<div class="muted" style="font-size:11.5px;margin-top:4px">' + escapeHtml(a.by || '') + ' · ' + escapeHtml(formatTime(a.created_at)) + '</div></div>' +
-      (isAdmin ? '<button class="btn icon sm ghost" data-del title="删除" style="color:var(--danger)">' + icon('trash', 13) + '</button>' : '') +
+      (canManage ? '<button class="btn icon sm ghost" data-del title="删除" style="color:var(--danger)">' + icon('trash', 13) + '</button>' : '') +
       '</div>';
   }).join('') || '<div class="hint">暂无公告</div>';
 
   showModal({
     title: '团队公告',
     body:
-      (isAdmin && !readOnly
+      (canManage && !readOnly
         ? '<div class="field"><label>发布新公告</label>' +
-          '<textarea class="textarea" id="ann-content" maxlength="500" style="min-height:80px" placeholder="如：本周五前把复习资料上传到知识库…"></textarea></div>' +
+          '<textarea class="textarea" id="ann-content" maxlength="500" style="min-height:80px" placeholder="输入公告内容…"></textarea></div>' +
           '<button class="btn primary sm" id="ann-publish">' + icon('plus', 14) + '发布</button><div style="height:12px"></div>'
         : '') +
       '<div class="home-sub-title">历史公告</div>' + rowsHtml,

@@ -7,6 +7,8 @@ async function renderSettingsView(root) {
     '<div class="settings-page">' +
     '  <div class="card" id="set-account"></div>' +
     '  <div class="card" id="set-password"></div>' +
+    (isClientMode() ? '  <div class="card" id="set-server"></div>' : '') +
+    '  <div class="card" id="set-myima"></div>' +
     '  <div class="card" id="set-ima"></div>' +
     '  <div class="card" id="set-ask"></div>' +
     '  <div class="card" id="set-mcp"></div>' +
@@ -54,16 +56,63 @@ async function renderSettingsView(root) {
     btn.disabled = false;
   });
 
-  renderImaCard(root, me);
+  renderImaCard(root);
+  renderMyImaCard(root);
+  if (isClientMode()) renderServerCard(root);
   renderAskCard(root);
   renderMcpCard(root);
+}
+
+/* ============ 服务端（客户端模式） ============ */
+async function renderServerCard(root) {
+  const box = $('#set-server', root);
+  if (!box) return;
+  box.innerHTML =
+    '<div class="card-head">' + icon('wifi', 18) + '<h3>服务端</h3><span class="sub">客户端模式</span></div>' +
+    '<div class="card-body"><div class="loading-center"><div class="spinner"></div><div>加载状态…</div></div></div>';
+
+  let st = { connected: false, server: '', last_sync: 0 };
+  try {
+    st = (await apiGet('/api/client/status', { silent: true })) || st;
+  } catch (e) { /* 离线也照常展示 */ }
+  const body = $('.card-body', box);
+
+  function draw() {
+    body.innerHTML =
+      '<dl class="dl">' +
+      '<dt>地址</dt><dd class="mono">' + escapeHtml(st.server || '—') + '</dd>' +
+      '<dt>状态</dt><dd>' + (st.connected ? '<span class="badge ok">已连接</span>' : '<span class="badge warn">离线</span>') + '</dd>' +
+      '<dt>上次同步</dt><dd>' + escapeHtml(formatTime(st.last_sync)) + '</dd>' +
+      '</dl>' +
+      '<div style="display:flex;gap:10px;margin-top:12px">' +
+      '<button class="btn primary" id="cli-sync">' + icon('refresh', 15) + '立即同步</button>' +
+      '<button class="btn" id="cli-dis">' + icon('logout', 15) + '断开</button>' +
+      '</div>';
+    $('#cli-sync', body).addEventListener('click', async function () {
+      const b = $('#cli-sync', body);
+      b.disabled = true;
+      try {
+        const r = await apiPost('/api/client/sync', {});
+        if (r) st = r;
+        toast('同步完成', 'success');
+        draw();
+        if (typeof updateConnBadge === 'function') updateConnBadge();
+      } catch (e) { /* api 层已提示 */ }
+      b.disabled = false;
+    });
+    $('#cli-dis', body).addEventListener('click', function () {
+      const lb = $('#logout-btn'); // 走现有登出流程
+      if (lb) lb.click();
+    });
+  }
+  draw();
 }
 
 /* ============ 知识库问答模型（内置 agent 查询合成） ============ */
 async function renderAskCard(root) {
   const box = $('#set-ask', root);
   if (!box) return;
-  const isAdmin = (typeof state !== 'undefined' && state.user && state.user.role === 'admin');
+  const isAdmin = (typeof state !== 'undefined' && state.user && state.user.role === 'admin') && !isClientMode();
   box.innerHTML =
     '<div class="card-head">' + icon('search', 18) + '<h3>知识库问答模型</h3><span class="sub">agent 级查询能力，内置合成回答</span></div>' +
     '<div class="card-body"><div class="loading-center"><div class="spinner"></div><div>加载配置…</div></div></div>';
@@ -76,8 +125,8 @@ async function renderAskCard(root) {
   const body = $('.card-body', box);
   if (!isAdmin) {
     body.innerHTML = status.configured
-      ? '<div class="hint">问答模型已配置（' + escapeHtml(status.model || '') + '），可在首页直接提问。</div>'
-      : '<div class="hint">管理员尚未配置问答模型，首页提问将只返回知识库检索片段。</div>';
+      ? '<div class="hint">问答模型已配置（' + escapeHtml(status.model || '') + '）</div>'
+      : '<div class="hint">未配置问答模型，提问仅返回检索片段</div>';
     return;
   }
 
@@ -91,7 +140,7 @@ async function renderAskCard(root) {
     return;
   }
   body.innerHTML =
-    '<div class="hint" style="margin:0 0 10px">配置 OpenAI 兼容端点后，首页问答 / MCP ima_ask 会自动检索团队知识库并合成回答（工具内置调用，不依赖外部 agent）。留空 API Key 表示不修改。</div>' +
+    '<div class="hint" style="margin:0 0 10px">问答自动检索知识库合成回答；API Key 留空不改</div>' +
     '<div class="form-row">' +
     '  <div class="field"><label>Base URL</label><input class="input mono" id="ask-base" placeholder="https://api.openai.com/v1" value="' + escapeHtml(cfg.ask_base_url || '') + '"></div>' +
     '  <div class="field"><label>模型名</label><input class="input mono" id="ask-model" placeholder="如 deepseek-chat / gpt-4o-mini" value="' + escapeHtml(cfg.ask_model || '') + '"></div>' +
@@ -117,169 +166,171 @@ async function renderAskCard(root) {
   });
 }
 
-async function renderImaCard(root) {
-  const box = $('#set-ima', root);
-  const isAdmin = (typeof state !== 'undefined' && state.user && state.user.role === 'admin');
+/* ============ 我的 ima（1 人 1 号，成员自助） ============ */
+async function renderMyImaCard(root) {
+  const box = $('#set-myima', root);
+  if (!box) return;
   box.innerHTML =
-    '<div class="card-head">' + icon('database', 18) + '<h3>团队容量池</h3><span class="sub">全团队共享，知识库数据互通</span><span class="sub" id="ima-count"></span>' +
-    '<span style="flex:1"></span>' +
-    (isAdmin ? '<button class="btn primary sm" id="ima-add">' + icon('plus', 14) + '添加账号</button>' : '') +
-    '</div>' +
-    '<div class="card-body">' +
-    '<div class="loading-center"><div class="spinner"></div><div>加载团队 ima 账号…</div></div>' +
-    '</div>';
-  const addBtn = $('#ima-add', box);
-  if (addBtn) addBtn.addEventListener('click', function () { openImaAddModal(root); });
+    '<div class="card-head">' + icon('key', 18) + '<h3>我的 ima</h3><span class="sub">1 人 1 号，重复保存即更新</span></div>' +
+    '<div class="card-body"><div class="loading-center"><div class="spinner"></div><div>加载…</div></div></div>';
 
-  let accounts = [];
+  // 我的号（me.ima.accounts 的 own 项）+ 完整凭证（ima-keys 全员可取）
+  let myAcc = null;
+  let myKey = null;
   try {
-    const data = await apiGet('/api/ima/accounts');
-    accounts = (data && data.accounts) || [];
-  } catch (e) {
-    $('.card-body', box).innerHTML = emptyStateHtml('alert', '账号列表加载失败', e.message || '请稍后重试');
-    mountIcons(box);
-    return;
+    const me2 = await apiGet('/api/me', { silent: true });
+    const accs = (me2 && me2.ima && me2.ima.accounts) || [];
+    myAcc = accs.filter(function (a) { return a.own; })[0] || null;
+  } catch (e) { /* 离线：表单留空 */ }
+  try {
+    const kd = await apiGet('/api/me/ima-keys', { silent: true });
+    const keys = (kd && kd.keys) || [];
+    const uid = state.user ? String(state.user.id) : '';
+    myKey = keys.filter(function (k) { return String(k.owner_id) === uid; })[0] || null;
+  } catch (e) { /* 同上 */ }
+  if (!myAcc && myKey) myAcc = { id: myKey.id, name: myKey.name, upload_kb_id: myKey.upload_kb_id };
+
+  const body = $('.card-body', box);
+  const kbFieldHtml = myAcc
+    ? '<select class="select" id="mia-kb"><option value="">未设置</option></select>'
+    : '<input class="input mono" id="mia-kb" placeholder="知识库 ID">';
+  body.innerHTML =
+    '<div class="form-row">' +
+    '  <div class="field"><label>名称</label><input class="input" id="mia-name" placeholder="我的 ima"></div>' +
+    '  <div class="field"><label>Client ID</label><input class="input mono" id="mia-cid" autocomplete="off"></div>' +
+    '  <div class="field"><label>API Key</label><input class="input mono" type="password" id="mia-key" autocomplete="off"></div>' +
+    '</div>' +
+    '<div class="form-row"><div class="field"><label>默认上传知识库</label>' + kbFieldHtml + '</div></div>' +
+    '<button class="btn primary" id="mia-save">' + icon('save', 15) + '保存</button>' +
+    (myAcc ? '<button class="btn" id="mia-unbind" style="margin-left:10px">' + icon('trash', 15) + '解绑</button>' : '');
+
+  $('#mia-name', body).value = (myAcc && myAcc.name) || '';
+  $('#mia-cid', body).value = (myKey && myKey.client_id) || '';
+  $('#mia-key', body).value = (myKey && myKey.api_key) || '';
+
+  // 默认上传知识库：有号时列出自己账号下的知识库
+  const kbSel = $('select#mia-kb', body);
+  if (kbSel && myAcc && myAcc.id) {
+    apiGet(qs('/api/ima/kbs', { ia: String(myAcc.id), limit: 50 })).then(function (data) {
+      let opts = '<option value="">未设置</option>';
+      pickList(data).forEach(function (kb) {
+        opts += '<option value="' + escapeHtml(String(kb.id)) + '"' +
+          (String(myAcc.upload_kb_id || '') === String(kb.id) ? ' selected' : '') + '>' +
+          escapeHtml(kb.name || kb.id) + '</option>';
+      });
+      kbSel.innerHTML = opts;
+    }).catch(function () {
+      kbSel.innerHTML = '<option value="">加载失败</option>';
+    });
+  } else if (!kbSel) {
+    $('#mia-kb', body).value = (myAcc && myAcc.upload_kb_id) || '';
   }
 
+  $('#mia-save', body).addEventListener('click', async function () {
+    const name = $('#mia-name', body).value.trim();
+    const cid = $('#mia-cid', body).value.trim();
+    const key = $('#mia-key', body).value.trim();
+    const kb = $('#mia-kb', body).value.trim();
+    if (!cid || !key) { toast('请填写 Client ID 与 API Key', 'warn'); return; }
+    const btn = $('#mia-save', body);
+    btn.disabled = true;
+    try {
+      const payload = { name: name, client_id: cid, api_key: key };
+      if (kb) payload.upload_kb_id = kb;
+      await apiPost('/api/me/ima', payload);
+      toast('已保存', 'success');
+      await refreshImaAfterChange(root);
+    } catch (e) { btn.disabled = false; }
+  });
+
+  const unBtn = $('#mia-unbind', body);
+  if (unBtn) unBtn.addEventListener('click', async function () {
+    const ok = await confirmDialog('确定解绑我的 ima 账号？', { title: '解绑账号', danger: true, okText: '解绑' });
+    if (!ok) return;
+    try {
+      const id = (myAcc && myAcc.id) || (myKey && myKey.id);
+      await apiDel(id ? '/api/me/ima?id=' + encodeURIComponent(String(id)) : '/api/me/ima');
+      toast('已解绑', 'success');
+      await refreshImaAfterChange(root);
+    } catch (e) { /* api 层已提示 */ }
+  });
+}
+
+/* ============ 团队账号（只读归属列表） ============ */
+async function renderImaCard(root) {
+  const box = $('#set-ima', root);
+  if (!box) return;
+  box.innerHTML =
+    '<div class="card-head">' + icon('database', 18) + '<h3>团队账号</h3><span class="sub" id="ima-count"></span></div>' +
+    '<div class="card-body"><div class="loading-center"><div class="spinner"></div><div>加载账号…</div></div></div>';
+
+  // 归属清单：GET /api/me 的 ima.accounts（owner / own / source）
+  let accounts = (state.me && state.me.ima && state.me.ima.accounts) || [];
+  if (!accounts.length) {
+    try {
+      const data = await apiGet('/api/ima/accounts', { silent: true });
+      accounts = (data && data.accounts) || [];
+    } catch (e) { /* 空列表 */ }
+  }
   const cnt = $('#ima-count', box);
-  if (cnt) cnt.textContent = '共 ' + accounts.length + ' 个可用账号';
+  if (cnt) cnt.textContent = '共 ' + accounts.length + ' 个';
   const body = $('.card-body', box);
 
   if (!accounts.length) {
-    body.innerHTML = emptyStateHtml('key', '团队尚未配置 IMA 账号',
-      '团队共享的 ima 开放平台凭证（Client ID + API Key）由组长（管理员）添加后，全团队即可浏览和上传',
-      isAdmin ? '<button class="btn primary" id="ima-empty-add">' + icon('plus', 15) + '添加账号</button>' : '');
+    body.innerHTML = emptyStateHtml('key', '暂无团队账号', '在「我的 ima」绑定后显示在这里');
     mountIcons(body);
-    const b = $('#ima-empty-add', body);
-    if (b) b.addEventListener('click', function () { openImaAddModal(root); });
     return;
   }
 
   let html = '<div class="acct-list">';
   accounts.forEach(function (a, idx) {
-    const isDefault = a.source === 'server_default';
+    const label = a.own ? '我的' : (a.source === 'server_default' ? '服务端默认' : (a.owner || '团队'));
     html +=
       '<div class="acct-item" data-idx="' + idx + '">' +
       '  <div class="acct-main">' +
       '    <div class="kb-cover">' + escapeHtml((a.name || a.client_id_preview || '?').charAt(0)) + '</div>' +
       '    <div class="acct-info">' +
       '      <div class="acct-name">' + escapeHtml(a.name || '(未命名账号)') +
-      (isDefault ? ' <span class="badge muted">服务端默认</span>' : ' <span class="badge">团队共享</span>') +
+      ' <span class="badge' + (a.own ? '' : ' muted') + '">' + escapeHtml(label) + '</span>' +
       (a.bound === false ? ' <span class="badge warn">未绑定</span>' : '') +
       '      </div>' +
       '      <div class="acct-sub mono">' + escapeHtml(a.client_id_preview || String(a.id)) + '</div>' +
       '    </div>' +
       '    <div class="acct-actions">' +
       '      <button class="btn sm" data-act="test">' + icon('wifi', 14) + '测试连接</button>' +
-      (isDefault || !isAdmin ? '' :
-      '      <button class="btn sm" data-act="edit">' + icon('edit', 14) + '编辑凭证</button>' +
-      '      <button class="btn sm" data-act="rename">改名</button>' +
-      '      <button class="btn icon sm" data-act="del" title="删除" style="color:var(--danger)">' + icon('trash', 14) + '</button>') +
       '    </div>' +
       '  </div>' +
-      (isDefault || !isAdmin ? '' :
-      '  <div class="acct-upkb">' +
-      '    <span class="lbl">默认上传知识库</span>' +
-      '    <select class="select" data-f="upload_kb"><option value="">加载中…</option></select>' +
-      '    <span class="hint" style="margin:0">自动分配上传时存入该知识库</span>' +
-      '  </div>' +
-      '  <div class="acct-edit hidden">' +
-      '    <div class="form-row">' +
-      '      <div class="field"><label>Client ID（留空不改）</label><input class="input mono" data-f="client_id" placeholder="留空保持不变"></div>' +
-      '      <div class="field"><label>API Key（留空不改）</label><input class="input mono" type="password" data-f="api_key" placeholder="留空保持不变" autocomplete="off"></div>' +
-      '    </div>' +
-      '    <button class="btn primary sm" data-act="save-edit">' + icon('save', 14) + '保存修改</button>' +
-      '  </div>') +
       '  <div class="acct-test hidden"></div>' +
       '</div>';
   });
   html += '</div>' +
-    '<div class="hint">团队容量池：知识库 / 笔记本为全部账号的合并视图，全团队数据互通。上传由服务端自动分配账号；凭证由组长（管理员）维护，API Key 保存后不再回显。</div>';
+    '<div class="hint">知识库 / 笔记本为全部账号合并视图，全团队数据互通。</div>';
   body.innerHTML = html;
 
   $$('.acct-item', body).forEach(function (item) {
     const a = accounts[Number(item.getAttribute('data-idx'))];
     const testBox = $('.acct-test', item);
-
-    // 默认上传知识库下拉（仅用户账号）
-    const upSel = $('[data-f="upload_kb"]', item);
-    if (upSel) {
-      apiGet(qs('/api/ima/kbs', { ia: String(a.id), limit: 50 })).then(function (data) {
-        const kbs = pickList(data);
-        let opts = '<option value="">未设置</option>';
-        kbs.forEach(function (kb) {
-          opts += '<option value="' + escapeHtml(String(kb.id)) + '"' +
-            (String(a.upload_kb_id || '') === String(kb.id) ? ' selected' : '') + '>' +
-            escapeHtml(kb.name || kb.id) + '</option>';
-        });
-        upSel.innerHTML = opts;
-      }).catch(function () {
-        upSel.innerHTML = '<option value="">加载失败</option>';
-      });
-      upSel.addEventListener('change', async function () {
-        const v = upSel.value;
-        if (!v) { toast('请选择一个知识库作为默认上传目标', 'warn'); return; }
-        upSel.disabled = true;
-        try {
-          await apiPatch('/api/me/ima/' + encodeURIComponent(String(a.id)), { upload_kb_id: v });
-          toast('已设置默认上传知识库', 'success');
-        } catch (e) { /* api 层已提示 */ }
-        upSel.disabled = false;
-      });
-    }
-    $$('[data-act]', item).forEach(function (b) {
-      b.addEventListener('click', async function () {
-        const act = b.getAttribute('data-act');
-        if (act === 'test') {
-          b.disabled = true;
-          testBox.classList.remove('hidden');
-          testBox.innerHTML = '<div class="loading-center" style="padding:10px 0"><div class="spinner"></div><div>测试中…</div></div>';
-          try {
-            const data = await apiGet(qs('/api/ima/test', { ia: String(a.id) }));
-            const ok = data && data.ok;
-            testBox.innerHTML =
-              '<div style="padding:10px 14px;border-radius:10px;background:' + (ok ? 'var(--ok-soft)' : 'var(--warn-soft)') + '">' +
-              '<div style="display:flex;align-items:center;gap:8px;font-weight:600;color:' + (ok ? 'var(--ok)' : 'var(--warn)') + '">' +
-              icon(ok ? 'checkCircle' : 'alert', 15) + (ok ? '连接正常' : '连接异常') + '</div>' +
-              (data && data.note ? '<div class="hint" style="margin-top:4px">' + escapeHtml(data.note) + '</div>' : '') +
-              '</div>';
-          } catch (e) {
-            testBox.innerHTML =
-              '<div style="padding:10px 14px;border-radius:10px;background:var(--danger-soft)">' +
-              '<div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--danger)">' + icon('alert', 15) + '测试失败</div>' +
-              '<div class="hint" style="margin-top:4px">' + escapeHtml(e.message || '未知错误') + '</div></div>';
-          }
-          b.disabled = false;
-        } else if (act === 'edit') {
-          $('.acct-edit', item).classList.toggle('hidden');
-        } else if (act === 'rename') {
-          openImaRenameModal(root, a);
-        } else if (act === 'del') {
-          const okDel = await confirmDialog(
-            '确定删除账号 <strong>' + escapeHtml(a.name || a.client_id_preview || a.id) + '</strong> 吗？删除后该凭证立即失效。',
-            { title: '删除 IMA 账号', danger: true, okText: '删除' }
-          );
-          if (!okDel) return;
-          try {
-            await apiDel('/api/me/ima?id=' + encodeURIComponent(String(a.id)));
-            toast('账号已删除', 'success');
-            await refreshImaAfterChange(root);
-          } catch (e) { /* api 层已提示 */ }
-        } else if (act === 'save-edit') {
-          const cid = $('[data-f="client_id"]', item).value.trim();
-          const key = $('[data-f="api_key"]', item).value.trim();
-          if (!cid && !key) { toast('至少填写一项（留空表示不修改）', 'warn'); return; }
-          const body2 = {};
-          if (cid) body2.client_id = cid;
-          if (key) body2.api_key = key;
-          b.disabled = true;
-          try {
-            await apiPatch('/api/me/ima/' + encodeURIComponent(String(a.id)), body2);
-            toast('账号凭证已更新', 'success');
-            await refreshImaAfterChange(root);
-          } catch (e) { b.disabled = false; }
-        }
-      });
+    $('[data-act]', item).addEventListener('click', async function (ev) {
+      const b = ev.currentTarget;
+      b.disabled = true;
+      testBox.classList.remove('hidden');
+      testBox.innerHTML = '<div class="loading-center" style="padding:10px 0"><div class="spinner"></div><div>测试中…</div></div>';
+      try {
+        const data = await apiGet(qs('/api/ima/test', { ia: String(a.id) }));
+        const ok = data && data.ok;
+        testBox.innerHTML =
+          '<div style="padding:10px 14px;border-radius:10px;background:' + (ok ? 'var(--ok-soft)' : 'var(--warn-soft)') + '">' +
+          '<div style="display:flex;align-items:center;gap:8px;font-weight:600;color:' + (ok ? 'var(--ok)' : 'var(--warn)') + '">' +
+          icon(ok ? 'checkCircle' : 'alert', 15) + (ok ? '连接正常' : '连接异常') + '</div>' +
+          (data && data.note ? '<div class="hint" style="margin-top:4px">' + escapeHtml(data.note) + '</div>' : '') +
+          '</div>';
+      } catch (e) {
+        testBox.innerHTML =
+          '<div style="padding:10px 14px;border-radius:10px;background:var(--danger-soft)">' +
+          '<div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--danger)">' + icon('alert', 15) + '测试失败</div>' +
+          '<div class="hint" style="margin-top:4px">' + escapeHtml(e.message || '未知错误') + '</div></div>';
+      }
+      b.disabled = false;
     });
   });
 }
@@ -290,59 +341,6 @@ async function refreshImaAfterChange(root) {
   await loadIaAccounts();
   renderSettingsView(root);
 }
-
-function openImaAddModal(root) {
-  showModal({
-    title: '添加 IMA 账号',
-    body:
-      '<div class="field"><label>账号名称（可选）</label><input class="input" id="ia-name" placeholder="例如：工作号 / 个人号" autocomplete="off"></div>' +
-      '<div class="field"><label>Client ID</label><input class="input mono" id="ia-cid" placeholder="ima 开放平台 Client ID" autocomplete="off"></div>' +
-      '<div class="field"><label>API Key</label><input class="input mono" type="password" id="ia-key" placeholder="ima 开放平台 API Key" autocomplete="off">' +
-      '<div class="hint">API Key 仅用于服务端调用 ima 开放平台，保存后不再回显。</div></div>',
-    footer: '<button class="btn" data-close>取消</button><button class="btn primary" id="ia-go">' + icon('plus', 15) + '添加</button>',
-    onMount: function (mroot, close) {
-      $('#ia-go', mroot).addEventListener('click', async function () {
-        const name = $('#ia-name', mroot).value.trim();
-        const cid = $('#ia-cid', mroot).value.trim();
-        const key = $('#ia-key', mroot).value.trim();
-        if (!cid || !key) { toast('请填写 Client ID 和 API Key', 'warn'); return; }
-        const btn = $('#ia-go', mroot);
-        btn.disabled = true;
-        try {
-          const body = { client_id: cid, api_key: key };
-          if (name) body.name = name;
-          await apiPost('/api/me/ima', body);
-          toast('IMA 账号已添加', 'success');
-          close();
-          await refreshImaAfterChange(root);
-        } catch (e) {
-          btn.disabled = false;
-        }
-      });
-    },
-  });
-}
-
-function openImaRenameModal(root, a) {
-  showModal({
-    title: '重命名账号',
-    body: '<div class="field"><label>账号名称</label><input class="input" id="ir-name" value="' + escapeHtml(a.name || '') + '" placeholder="账号名称"></div>',
-    footer: '<button class="btn" data-close>取消</button><button class="btn primary" id="ir-go">保存</button>',
-    onMount: function (mroot, close) {
-      $('#ir-go', mroot).addEventListener('click', async function () {
-        const name = $('#ir-name', mroot).value.trim();
-        if (!name) { toast('请输入账号名称', 'warn'); return; }
-        try {
-          await apiPatch('/api/me/ima/' + encodeURIComponent(String(a.id)), { name: name });
-          toast('账号已重命名', 'success');
-          close();
-          await refreshImaAfterChange(root);
-        } catch (e) { /* api 层已提示 */ }
-      });
-    },
-  });
-}
-
 
 function renderMcpCard(root) {
   const box = $('#set-mcp', root);
@@ -370,8 +368,8 @@ function renderMcpCard(root) {
     '      <button class="btn icon sm" id="mcp-copy-token" title="复制">' + icon('copy', 14) + '</button>' +
     '      <button class="btn icon sm" id="mcp-rotate" title="重新生成">' + icon('refresh', 14) + '</button>' +
     '    </div>' +
-    '    <div class="hint">Token 是你的私密凭据，重新生成后旧 Token 立即失效。</div>' +
-    '    <div class="hint">所有 ima_* 工具均支持可选 account 参数（ima 账号 id 或名称）；省略时：搜索知识库 / 笔记本聚合全部账号，上传自动分配账号，其余工具用默认账号。</div>' +
+    '    <div class="hint">重新生成后旧 Token 失效</div>' +
+    '    <div class="hint">account 参数可选：省略时搜索聚合全部账号，上传自动分配</div>' +
     '  </div>' +
     '  <div class="field"><label>接入示例（MCP 客户端配置片段）</label>' +
     '    <div class="code-block"><button class="btn sm copy-btn" id="mcp-copy-snippet">' + icon('copy', 13) + '复制</button>' +
@@ -407,7 +405,7 @@ function renderMcpCard(root) {
   });
   $('#mcp-copy-snippet', box).addEventListener('click', function () { copyText(snippet); });
   $('#mcp-rotate', box).addEventListener('click', async function () {
-    const ok = await confirmDialog('重新生成 Token 后，使用旧 Token 的 MCP 连接会立即失效。确定继续吗？', { title: '重新生成 Token', danger: true, okText: '重新生成' });
+    const ok = await confirmDialog('旧 Token 将立即失效，确定重新生成？', { title: '重新生成 Token', danger: true, okText: '重新生成' });
     if (!ok) return;
     try {
       const data = await apiPost('/api/me/mcp-token/rotate', {});
@@ -556,7 +554,7 @@ async function adminToggleRole(u) {
 async function adminToggleDisabled(u) {
   const disable = !u.disabled;
   const ok = await confirmDialog(
-    '确定' + (disable ? '禁用' : '启用') + '用户 <strong>' + escapeHtml(u.username) + '</strong> 吗？' + (disable ? '禁用后该账号将无法登录。' : ''),
+    '确定' + (disable ? '禁用' : '启用') + '用户 <strong>' + escapeHtml(u.username) + '</strong> 吗？',
     { title: disable ? '禁用用户' : '启用用户', danger: disable, okText: disable ? '禁用' : '启用' }
   );
   if (!ok) return;
@@ -598,12 +596,12 @@ function renderAdminSettingsForm(box, s) {
     '<div class="field">' +
     '  <div class="setting-row"><div class="lbl">开放注册</div><div class="val" style="display:flex;align-items:center;gap:10px">' +
     '    <label class="switch"><input type="checkbox" id="as-register"' + (s.allow_register ? ' checked' : '') + '><span class="track"></span></label>' +
-    '    <span class="muted" style="font-size:12.5px">开启后任何人可自助注册账号</span></div></div>' +
+    '    <span class="muted" style="font-size:12.5px">开启后可自助注册</span></div></div>' +
     '</div>' +
     '<div class="field"><label>默认 IMA Client ID</label><input class="input mono" id="as-cid" value="' + escapeHtml(s.default_ima_client_id || '') + '" placeholder="未设置"></div>' +
     '<div class="field"><label>默认 IMA API Key</label>' +
-    '  <input class="input mono" type="password" id="as-key" placeholder="' + (s.default_ima_api_key_set ? '已设置（留空表示不修改）' : '未设置') + '" autocomplete="off">' +
-    '  <div class="hint">' + (s.default_ima_api_key_set ? '已设置默认 API Key。输入新值可覆盖，留空保持不变。' : '用户未绑定个人凭证时使用该默认凭证。') + '</div>' +
+    '  <input class="input mono" type="password" id="as-key" placeholder="' + (s.default_ima_api_key_set ? '已设置，留空不改' : '未设置') + '" autocomplete="off">' +
+    '  <div class="hint">' + (s.default_ima_api_key_set ? '留空保持不变' : '未绑定凭证时使用') + '</div>' +
     '</div>' +
     '<button class="btn primary" id="as-save">' + icon('save', 15) + '保存服务设置</button>';
 

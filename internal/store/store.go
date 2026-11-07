@@ -11,10 +11,11 @@ import (
 	"time"
 )
 
-// IMAAccount 一个 ima 开放平台账号（同用户可绑多个，聚合为容量池）。
+// IMAAccount 一个 ima 开放平台账号（成员自有或团队公共，聚合为容量池）。
 type IMAAccount struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	Owner      string `json:"owner,omitempty"` // 归属成员用户名（成员自有/缓存账号用）
 	ClientID   string `json:"client_id"`
 	APIKey     string `json:"api_key"`
 	UploadKBID string `json:"upload_kb_id,omitempty"` // 自动分配上传时的默认目标知识库
@@ -108,6 +109,11 @@ type Settings struct {
 	AskBaseURL string `json:"ask_base_url"`
 	AskAPIKey  string `json:"ask_api_key"`
 	AskModel   string `json:"ask_model"`
+	// 客户端模式（client）本地状态：服务端地址、会话、上次同步时间
+	ClientServerURL   string `json:"client_server_url,omitempty"`
+	ClientSession     string `json:"client_session,omitempty"`
+	ClientSessionUser string `json:"client_session_user,omitempty"`
+	ClientLastSync    int64  `json:"client_last_sync,omitempty"`
 }
 
 type data struct {
@@ -121,6 +127,8 @@ type data struct {
 	Tasks         []Task         `json:"tasks,omitempty"`
 	Events        []Event        `json:"events,omitempty"`
 	Announcements []Announcement `json:"announcements,omitempty"`
+	// Tombstones 任务/日程删除墓碑（"task:<id>"/"event:<id>" → 删除时间），离线同步 LWW 用。
+	Tombstones map[string]int64 `json:"tombstones,omitempty"`
 }
 
 type Store struct {
@@ -426,6 +434,11 @@ func (s *Store) AddActivity(a Activity) {
 	if a.At == 0 {
 		a.At = time.Now().Unix()
 	}
+	for _, x := range s.d.Activities {
+		if x.ID == a.ID {
+			return // 幂等：离线同步重放不重复计
+		}
+	}
 	s.d.Activities = append(s.d.Activities, a)
 	if len(s.d.Activities) > activityCap {
 		s.d.Activities = s.d.Activities[len(s.d.Activities)-activityCap:]
@@ -507,10 +520,178 @@ func (s *Store) DeleteTask(id string) error {
 	for i := range s.d.Tasks {
 		if s.d.Tasks[i].ID == id {
 			s.d.Tasks = append(s.d.Tasks[:i], s.d.Tasks[i+1:]...)
+			s.setTombstoneLocked("task:"+id, time.Now().Unix())
 			return s.saveLocked()
 		}
 	}
 	return ErrNotFound
+}
+
+// --- 离线同步（客户端 LWW 合并） ---
+
+func (s *Store) setTombstoneLocked(key string, ts int64) {
+	if s.d.Tombstones == nil {
+		s.d.Tombstones = map[string]int64{}
+	}
+	if ts > s.d.Tombstones[key] {
+		s.d.Tombstones[key] = ts
+	}
+}
+
+// TombstonesCopy 返回删除墓碑副本。
+func (s *Store) TombstonesCopy() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64, len(s.d.Tombstones))
+	for k, v := range s.d.Tombstones {
+		out[k] = v
+	}
+	return out
+}
+
+// SyncMerge 批量 LWW 合并（客户端离线改动回传）：UpdatedAt 决胜，删除墓碑压过更旧的更新。
+// 返回 (采纳任务数, 采纳日程数)。
+func (s *Store) SyncMerge(tasks []Task, events []Event, tombs map[string]int64) (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, ts := range tombs {
+		s.setTombstoneLocked(k, ts)
+	}
+	// 墓碑清理：本地副本比删除旧的直接删掉（离线端删除同步进来时生效）
+	for i := 0; i < len(s.d.Tasks); {
+		if ts, ok := s.d.Tombstones["task:"+s.d.Tasks[i].ID]; ok && ts >= s.d.Tasks[i].UpdatedAt {
+			s.d.Tasks = append(s.d.Tasks[:i], s.d.Tasks[i+1:]...)
+			continue
+		}
+		i++
+	}
+	for i := 0; i < len(s.d.Events); {
+		if ts, ok := s.d.Tombstones["event:"+s.d.Events[i].ID]; ok && ts >= s.d.Events[i].UpdatedAt {
+			s.d.Events = append(s.d.Events[:i], s.d.Events[i+1:]...)
+			continue
+		}
+		i++
+	}
+	adoptT := 0
+	for _, t := range tasks {
+		if t.ID == "" {
+			t.ID = RandomToken()[:12]
+		}
+		if ts, ok := s.d.Tombstones["task:"+t.ID]; ok && ts >= t.UpdatedAt {
+			continue
+		}
+		found := false
+		for i := range s.d.Tasks {
+			if s.d.Tasks[i].ID == t.ID {
+				found = true
+				if s.d.Tasks[i].UpdatedAt < t.UpdatedAt {
+					s.d.Tasks[i] = t
+					adoptT++
+				}
+				break
+			}
+		}
+		if !found {
+			s.d.Tasks = append(s.d.Tasks, t)
+			adoptT++
+		}
+	}
+	adoptE := 0
+	for _, e := range events {
+		if e.ID == "" {
+			e.ID = RandomToken()[:12]
+		}
+		if ts, ok := s.d.Tombstones["event:"+e.ID]; ok && ts >= e.UpdatedAt {
+			continue
+		}
+		found := false
+		for i := range s.d.Events {
+			if s.d.Events[i].ID == e.ID {
+				found = true
+				if s.d.Events[i].UpdatedAt < e.UpdatedAt {
+					s.d.Events[i] = e
+					adoptE++
+				}
+				break
+			}
+		}
+		if !found {
+			s.d.Events = append(s.d.Events, e)
+			adoptE++
+		}
+	}
+	_ = s.saveLocked()
+	return adoptT, adoptE
+}
+
+// ReplaceTasks 整表替换任务（客户端同步拉取后以合并结果为准）。
+func (s *Store) ReplaceTasks(in []Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Tasks = append([]Task(nil), in...)
+	_ = s.saveLocked()
+}
+
+// ReplaceEvents 整表替换日程。
+func (s *Store) ReplaceEvents(in []Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Events = append([]Event(nil), in...)
+	_ = s.saveLocked()
+}
+
+// ReplaceAnnouncements 整表替换公告（客户端缓存）。
+func (s *Store) ReplaceAnnouncements(in []Announcement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Announcements = append([]Announcement(nil), in...)
+	_ = s.saveLocked()
+}
+
+// ReplaceTeamAccounts 整表替换团队账号缓存（客户端同步拉取的分发 key）。
+func (s *Store) ReplaceTeamAccounts(in []IMAAccount) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.TeamAccounts = append([]IMAAccount(nil), in...)
+	_ = s.saveLocked()
+}
+
+// OwnedAccount 账号 + 归属（聚合视图 / 密钥分发用）。
+type OwnedAccount struct {
+	IMAAccount
+	Owner   string `json:"owner"`
+	OwnerID string `json:"owner_id"`
+	Source  string `json:"source"` // user | team | default
+}
+
+// AllIMAAccounts 全部可用账号：成员自有 + 团队公共池 + 服务端默认。
+func (s *Store) AllIMAAccounts() []OwnedAccount {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []OwnedAccount{}
+	for i := range s.d.Users {
+		u := &s.d.Users[i]
+		for j := range u.IMAAccounts {
+			a := u.IMAAccounts[j]
+			a.Owner = u.Username
+			out = append(out, OwnedAccount{IMAAccount: a, Owner: u.Username, OwnerID: u.ID, Source: "user"})
+		}
+	}
+	for j := range s.d.TeamAccounts {
+		a := s.d.TeamAccounts[j]
+		if a.Owner == "" {
+			a.Owner = "团队公共"
+		}
+		out = append(out, OwnedAccount{IMAAccount: a, Owner: a.Owner, Source: "team"})
+	}
+	if s.d.Settings.DefaultIMAClientID != "" && s.d.Settings.DefaultIMAAPIKey != "" {
+		out = append(out, OwnedAccount{
+			IMAAccount: IMAAccount{ID: "default", Name: "服务端默认账号",
+				ClientID: s.d.Settings.DefaultIMAClientID, APIKey: s.d.Settings.DefaultIMAAPIKey},
+			Owner: "服务端默认", Source: "default",
+		})
+	}
+	return out
 }
 
 // --- 团队共享账号池 ---
@@ -625,6 +806,7 @@ func (s *Store) DeleteEvent(id string) error {
 	for i := range s.d.Events {
 		if s.d.Events[i].ID == id {
 			s.d.Events = append(s.d.Events[:i], s.d.Events[i+1:]...)
+			s.setTombstoneLocked("event:"+id, time.Now().Unix())
 			return s.saveLocked()
 		}
 	}
