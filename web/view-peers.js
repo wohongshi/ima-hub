@@ -93,11 +93,13 @@ function renderPeerListCard(box, data, root) {
     }
   });
 
-  // 行内操作：备注 / 删除
+  // 行内操作：知识库 / 备注 / 删除
   $$('.peer-row', box).forEach(function (row) {
     const id = row.getAttribute('data-id');
     const p = peers.filter(function (x) { return x.id === id; })[0];
     if (!p) return;
+    const kbBtn = $('[data-act="kb"]', row);
+    if (kbBtn) kbBtn.addEventListener('click', function () { openPeerKbModal(p); });
     $('[data-act="nick"]', row).addEventListener('click', function () {
       openPeerNickModal(root, '节点备注', p.nickname, function (nick) {
         return apiPatch('/api/peers/' + encodeURIComponent(p.id), { nickname: nick });
@@ -143,6 +145,9 @@ function peerRowHtml(p) {
     (p.addr ? '<span>' + escapeHtml(p.addr) + '</span>' : '') +
     '</div></div>' +
     '<div class="peer-actions">' +
+    (Array.isArray(p.granted) && p.granted.length
+      ? '<button class="btn sm" data-act="kb">' + icon('database', 13) + '知识库</button>'
+      : '') +
     '<button class="btn sm" data-act="nick">备注</button>' +
     '<button class="btn sm danger" data-act="del">删除</button>' +
     '</div></div>';
@@ -452,4 +457,303 @@ async function openAccessAskModal(root) {
       });
     },
   });
+}
+
+/* ============ 共享知识库（对等节点：浏览 / 检索 / 下载） ============ */
+/* 模态内状态机：view=list 知识库列表 / browse 文件浏览；searching=检索结果态 */
+const peerKbState = {
+  peer: null,     // 当前节点（id / scopes）
+  scopes: [],     // 已获访问范围
+  view: 'list',   // list | browse
+  kb: null,       // 当前知识库 {id,name}
+  path: [],       // 文件夹路径 [{folder_id,name}]，空=库根
+  kbs: null,      // 知识库列表缓存
+  searching: false,
+  query: '',
+  cursor: null,   // 分页游标
+  isEnd: true,
+};
+
+/* 下载直链：同源 cookie，锚点 href 直指后端二进制附件 */
+function peerKbDownloadUrl(peerId, kbId, mediaId, name) {
+  return '/api/peers/' + encodeURIComponent(peerId) + '/kb/download' +
+    '?kb=' + encodeURIComponent(kbId) +
+    '&media=' + encodeURIComponent(mediaId) +
+    '&name=' + encodeURIComponent(name || '');
+}
+
+/* 全屏模态入口：顶部已获范围 + 搜索框（无 search 权限隐藏） */
+function openPeerKbModal(peer) {
+  const st = peerKbState;
+  st.peer = peer;
+  st.scopes = Array.isArray(peer.granted) ? peer.granted.slice() : [];
+  st.view = 'list';
+  st.kb = null;
+  st.path = [];
+  st.kbs = null;
+  st.searching = false;
+  st.query = '';
+  st.cursor = null;
+  const canSearch = st.scopes.indexOf('search') >= 0;
+  showModal({
+    title: '共享知识库',
+    xwide: true,
+    body:
+      '<div class="peer-kb-top"><span class="lbl">已获范围</span>' +
+      (st.scopes.length
+        ? st.scopes.map(function (s) {
+            return '<span class="badge">' + escapeHtml(ACCESS_SCOPE_LABELS[s] || s) + '</span>';
+          }).join('')
+        : '<span class="badge muted">无</span>') +
+      '<span class="pk-peer">' + escapeHtml(peer.nickname || peer.id_pretty || peer.id) + '</span></div>' +
+      (canSearch
+        ? '<div class="pk-search"><input class="input" id="pk-q" placeholder="跨库检索" autocomplete="off">' +
+          '<button class="btn primary" id="pk-go">' + icon('search', 14) + '搜索</button></div>'
+        : '') +
+      '<div id="pk-toolbar"></div><div id="pk-list"></div>',
+    footer: '<button class="btn" data-close>关闭</button>',
+    onMount: function (m) {
+      $('.modal', m).classList.add('peer-kb');
+      m.classList.add('peer-kb-mask');
+      if (canSearch) {
+        const q = $('#pk-q', m);
+        q.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') pkbStartSearch(m);
+        });
+        $('#pk-go', m).addEventListener('click', function () { pkbStartSearch(m); });
+      }
+      // 行点击委托：知识库进入 / 文件夹下钻（下载是锚点直链，无需 JS）
+      $('#pk-list', m).addEventListener('click', function (e) {
+        const t = e.target && e.target.closest ? e.target.closest('[data-pkb]') : null;
+        if (!t) return;
+        const kind = t.getAttribute('data-pkb');
+        if (kind === 'kb') {
+          st.kb = { id: t.getAttribute('data-id'), name: t.getAttribute('data-name') };
+          st.view = 'browse';
+          st.path = [];
+          st.searching = false;
+          st.query = '';
+          if (canSearch) $('#pk-q', m).value = '';
+          pkbRender(m);
+        } else if (kind === 'folder') {
+          st.path.push({ folder_id: t.getAttribute('data-id'), name: t.getAttribute('data-name') });
+          st.cursor = null;
+          pkbRender(m);
+        }
+      });
+      pkbRender(m);
+    },
+  });
+}
+
+/* 工具栏：检索态提示 / 浏览态面包屑 + 返回按钮；搜索框占位随视图切换 */
+function pkbSyncToolbar(m) {
+  const st = peerKbState;
+  const bar = $('#pk-toolbar', m);
+  const q = $('#pk-q', m);
+  if (q) q.placeholder = st.view === 'browse' ? '检索该知识库' : '跨库检索';
+  if (st.searching) {
+    bar.innerHTML =
+      '<div class="pk-crumb"><button class="btn sm" data-act="back">' + icon('chevronLeft', 13) + '返回</button>' +
+      '<span class="hint pk-q-hint">「' + escapeHtml(st.query) + '」的检索结果</span></div>';
+  } else if (st.view === 'browse') {
+    let html = '<div class="pk-crumb">' +
+      '<button class="btn icon sm" data-act="back" title="返回">' + icon('chevronLeft', 14) + '</button>' +
+      '<button class="crumb" data-crumb="0">' + escapeHtml(st.kb ? st.kb.name : '') + '</button>';
+    st.path.forEach(function (f, i) {
+      html += '<span class="crumb-sep">' + icon('chevronRight', 12) + '</span>' +
+        (i === st.path.length - 1
+          ? '<span class="crumb current">' + escapeHtml(f.name) + '</span>'
+          : '<button class="crumb" data-crumb="' + (i + 1) + '">' + escapeHtml(f.name) + '</button>');
+    });
+    bar.innerHTML = html + '</div>';
+  } else {
+    bar.innerHTML = '';
+  }
+  const back = $('[data-act="back"]', bar);
+  if (back) back.addEventListener('click', function () { pkbBack(m); });
+  $$('.crumb[data-crumb]', bar).forEach(function (b) {
+    b.addEventListener('click', function () {
+      st.path = st.path.slice(0, Number(b.getAttribute('data-crumb')) || 0);
+      st.cursor = null;
+      pkbRender(m);
+    });
+  });
+}
+
+/* 返回：先退检索态，再上一级文件夹，最后回知识库列表 */
+function pkbBack(m) {
+  const st = peerKbState;
+  if (st.searching) {
+    st.searching = false;
+    st.query = '';
+    st.cursor = null;
+    const q = $('#pk-q', m);
+    if (q) q.value = '';
+    pkbRender(m);
+    return;
+  }
+  if (st.view !== 'browse') return;
+  if (st.path.length) {
+    st.path.pop();
+    st.cursor = null;
+    pkbRender(m);
+    return;
+  }
+  st.view = 'list';
+  st.kb = null;
+  pkbRender(m);
+}
+
+/* 渲染分发：检索 → 浏览 → 列表 */
+function pkbRender(m) {
+  pkbSyncToolbar(m);
+  const st = peerKbState;
+  if (st.searching) pkbLoadSearch(m, false);
+  else if (st.view === 'browse') pkbLoadBrowse(m, false);
+  else pkbLoadKbs(m);
+}
+
+/* 检索启动：列表视图=跨库（kb 留空）；浏览视图=库内 */
+function pkbStartSearch(m) {
+  const st = peerKbState;
+  const q = $('#pk-q', m);
+  const kw = q ? q.value.trim() : '';
+  if (!kw) { toast('请输入检索词', 'warn'); return; }
+  st.searching = true;
+  st.query = kw;
+  st.cursor = null;
+  pkbRender(m);
+}
+
+/* 行容器统一渲染：替换 / 追加 + 加载更多 */
+function pkbRenderRows(m, rowsHtml, more, emptyHtml) {
+  const st = peerKbState;
+  const list = $('#pk-list', m);
+  const oldMore = $('#pk-more', list);
+  if (oldMore) oldMore.remove();
+  if (more && $('#pk-rows', list)) {
+    $('#pk-rows', list).insertAdjacentHTML('beforeend', rowsHtml);
+  } else {
+    list.innerHTML = '<div class="pk-list" id="pk-rows">' + (rowsHtml || emptyHtml) + '</div>';
+  }
+  if (!st.isEnd) {
+    list.insertAdjacentHTML('beforeend',
+      '<div class="load-more" id="pk-more"><button class="btn" id="pk-more-btn">加载更多</button></div>');
+    $('#pk-more-btn', list).addEventListener('click', function () {
+      if (st.searching) pkbLoadSearch(m, true);
+      else pkbLoadBrowse(m, true);
+    });
+  }
+  mountIcons(list);
+}
+
+/* 知识库列表（GET /api/peers/{id}/kbs，需 browse；已缓存直接渲染） */
+async function pkbLoadKbs(m) {
+  const st = peerKbState;
+  const list = $('#pk-list', m);
+  const empty = emptyStateHtml('database', '暂无知识库', '');
+  if (st.kbs) { pkbRenderRows(m, st.kbs.map(pkbKbRowHtml).join(''), false, empty); return; }
+  if (st.scopes.indexOf('browse') < 0) {
+    list.innerHTML = emptyStateHtml('lock', '未获浏览授权', '');
+    mountIcons(list);
+    return;
+  }
+  list.innerHTML = skeletonRows(4);
+  try {
+    const d = await apiGet('/api/peers/' + encodeURIComponent(st.peer.id) + '/kbs');
+    st.kbs = (d && d.kbs) || [];
+    pkbRenderRows(m, st.kbs.map(pkbKbRowHtml).join(''), false, empty);
+  } catch (e) {
+    list.innerHTML = '<div class="acc-empty">知识库加载失败</div>'; // api 层已 toast msg
+  }
+}
+
+/* 库内浏览（POST /api/peers/{id}/kb/browse，需 browse） */
+async function pkbLoadBrowse(m, more) {
+  const st = peerKbState;
+  const list = $('#pk-list', m);
+  if (!more) list.innerHTML = skeletonRows(5);
+  const body = { kb: st.kb.id, limit: 50 };
+  const folder = st.path.length ? st.path[st.path.length - 1].folder_id : '';
+  if (folder) body.folder = folder;
+  if (more && st.cursor) body.cursor = st.cursor;
+  try {
+    const d = await apiPost('/api/peers/' + encodeURIComponent(st.peer.id) + '/kb/browse', body);
+    st.cursor = (d && d.next_cursor) || null;
+    st.isEnd = !d || d.is_end === undefined || !!d.is_end;
+    const folders = (d && d.folders) || [];
+    const files = (d && d.files) || [];
+    const rowsHtml = folders.map(pkbFolderRowHtml).join('') +
+      files.map(function (f) { return pkbFileRowHtml(f, st.kb.id, ''); }).join('');
+    pkbRenderRows(m, rowsHtml, more, emptyStateHtml('folder', '空文件夹', ''));
+  } catch (e) {
+    if (!more) list.innerHTML = '<div class="acc-empty">加载失败</div>'; // api 层已 toast msg
+  }
+}
+
+/* 检索（POST /api/peers/{id}/kb/search，需 search）：跨库→kb 列表；库内→文件行 */
+async function pkbLoadSearch(m, more) {
+  const st = peerKbState;
+  const list = $('#pk-list', m);
+  if (!more) list.innerHTML = skeletonRows(5);
+  const inKb = st.view === 'browse' && !!st.kb;
+  const body = { q: st.query, limit: 20 };
+  if (inKb) body.kb = st.kb.id;
+  if (more && st.cursor) body.cursor = st.cursor;
+  try {
+    const d = await apiPost('/api/peers/' + encodeURIComponent(st.peer.id) + '/kb/search', body);
+    st.cursor = (d && d.next_cursor) || null;
+    st.isEnd = !d || d.is_end === undefined || !!d.is_end;
+    if (inKb) {
+      const files = (d && d.files) || [];
+      const kbId = (d && d.kb) ? (d.kb.id || d.kb) : st.kb.id;
+      pkbRenderRows(m, files.map(function (f) { return pkbFileRowHtml(f, kbId, f.highlight_content); }).join(''),
+        more, emptyStateHtml('search', '无匹配文件', ''));
+    } else {
+      const kbs = (d && d.kbs) || [];
+      pkbRenderRows(m, kbs.map(pkbKbRowHtml).join(''), more, emptyStateHtml('search', '无匹配知识库', ''));
+    }
+  } catch (e) {
+    if (!more) list.innerHTML = '<div class="acc-empty">检索失败</div>'; // api 层已 toast msg
+  }
+}
+
+/* ============ 共享知识库行模板 ============ */
+/* 知识库行：封面占位 + 名称（点击进入浏览） */
+function pkbKbRowHtml(kb) {
+  const cover = kb.cover_url
+    ? '<img src="' + escapeHtml(kb.cover_url) + '" alt="">'
+    : escapeHtml((kb.name || '?').trim().slice(0, 1));
+  return '<div class="pk-row" data-pkb="kb" data-id="' + escapeHtml(kb.id) + '" data-name="' + escapeHtml(kb.name) + '">' +
+    '<div class="kb-cover">' + cover + '</div>' +
+    '<div class="pk-main"><div class="pk-name">' + escapeHtml(kb.name || '(未命名)') + '</div></div>' +
+    icon('chevronRight', 14) + '</div>';
+}
+
+/* 文件夹行：点击下钻 */
+function pkbFolderRowHtml(f) {
+  return '<div class="pk-row" data-pkb="folder" data-id="' + escapeHtml(f.folder_id) + '" data-name="' + escapeHtml(f.name) + '">' +
+    '<div class="file-icon" style="background:#f59e0b1f;color:#f59e0b">' + icon('folder', 19) + '</div>' +
+    '<div class="pk-main"><div class="pk-name">' + escapeHtml(f.name) + '</div></div>' +
+    icon('chevronRight', 14) + '</div>';
+}
+
+/* 文件行：下载图标为锚点直链（无 download 权限则隐藏） */
+function pkbFileRowHtml(f, kbId, hl) {
+  const title = f.title || '(未命名)';
+  const dl = peerKbState.scopes.indexOf('download') >= 0
+    ? '<a class="btn icon sm pk-dl" title="下载" rel="noopener" href="' +
+      escapeHtml(peerKbDownloadUrl(peerKbState.peer.id, kbId, f.media_id, title)) + '">' + icon('download', 14) + '</a>'
+    : '';
+  return '<div class="pk-row">' + fileIconHtml({ title: title }) +
+    '<div class="pk-main"><div class="pk-name">' + escapeHtml(title) + '</div>' +
+    (hl ? '<div class="pk-sub">' + highlightHtml(hl) + '</div>' : '') + '</div>' + dl + '</div>';
+}
+
+/* 检索摘要高亮：先整体转义，再把转义后的 em 标签还原成 mark（白名单仅 em，防 XSS） */
+function highlightHtml(s) {
+  return escapeHtml(s || '')
+    .replace(/&lt;em&gt;/g, '<mark class="hl">')
+    .replace(/&lt;\/em&gt;/g, '</mark>');
 }

@@ -12,7 +12,7 @@ import (
 // onlineWindowSec 超过此时长未宣告视为离线（3 个宣告周期）。
 const onlineWindowSec = 90
 
-func peerView(p peer.Peer) map[string]any {
+func (s *Server) peerView(p peer.Peer) map[string]any {
 	return map[string]any{
 		"id":        p.ID,
 		"id_pretty": peer.FormatID(p.ID),
@@ -22,8 +22,34 @@ func peerView(p peer.Peer) map[string]any {
 		"trusted":   p.Trusted,
 		"online":    p.LastSeen >= time.Now().Unix()-onlineWindowSec,
 		"scopes":    p.Scopes,
+		"granted":   s.grantedToMe(p.ID),
 		"last_seen": p.LastSeen,
 	}
+}
+
+// grantedToMe 对方授予我的访问范围（我发出且已批准、未过期申请的并集）。
+// 与 scopes 方向相反：scopes 是我授予对方的，granted 是对方授予我的。
+func (s *Server) grantedToMe(peerID string) []string {
+	now := time.Now().Unix()
+	g := map[string]bool{}
+	for _, ar := range s.Store.AccessList() {
+		if ar.Direction != "sent" || ar.PeerID != peerID || ar.Status != "approved" {
+			continue
+		}
+		if ar.ExpiresAt > 0 && now > ar.ExpiresAt {
+			continue
+		}
+		for _, sc := range ar.Scopes {
+			g[sc] = true
+		}
+	}
+	out := []string{}
+	for _, sc := range []string{"search", "browse", "download"} {
+		if g[sc] {
+			out = append(out, sc)
+		}
+	}
+	return out
 }
 
 func (s *Server) meView() map[string]any {
@@ -38,7 +64,7 @@ func (s *Server) meView() map[string]any {
 func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request, u *store.User) {
 	peers := []map[string]any{}
 	for _, p := range s.PeerTable.List() {
-		peers = append(peers, peerView(p))
+		peers = append(peers, s.peerView(p))
 	}
 	writeOK(w, map[string]any{
 		"me":       s.meView(),
@@ -108,7 +134,7 @@ func (s *Server) handlePeersAddInvite(w http.ResponseWriter, r *http.Request, u 
 	if got, ok := s.PeerTable.Get(p.ID); ok {
 		p = got
 	}
-	writeOK(w, map[string]any{"peer": peerView(p)})
+	writeOK(w, map[string]any{"peer": s.peerView(p)})
 }
 
 // handlePeersPatch 节点本地备注名。
@@ -129,7 +155,7 @@ func (s *Server) handlePeersPatch(w http.ResponseWriter, r *http.Request, u *sto
 		return
 	}
 	p, _ := s.PeerTable.Get(id)
-	writeOK(w, map[string]any{"peer": peerView(p)})
+	writeOK(w, map[string]any{"peer": s.peerView(p)})
 }
 
 // handlePeersDelete 删除节点。

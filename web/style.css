@@ -1320,3 +1320,55 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .acc-note { max-width: 100%; }
   .acc-scopes { gap: 10px 14px; }
 }
+
+/* —— 共享知识库（节点知识库模态） —— */
+.modal.peer-kb { max-width: 860px; }
+.peer-kb-top {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.peer-kb-top .lbl { font-size: 12px; color: var(--muted); flex: none; }
+.peer-kb-top .pk-peer { margin-left: auto; font-size: 12px; color: var(--muted); }
+.pk-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.pk-search .input { flex: 1; min-width: 0; }
+.pk-crumb {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  min-width: 0; margin-bottom: 10px;
+}
+.pk-q-hint { margin: 0; }
+.pk-list { display: flex; flex-direction: column; gap: 8px; }
+.pk-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel); cursor: pointer; transition: border-color .15s, background .15s;
+}
+.pk-row:hover { border-color: var(--accent-border); background: var(--hover); }
+.pk-main { flex: 1; min-width: 0; }
+.pk-name {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pk-sub {
+  margin-top: 3px; font-size: 11.5px; color: var(--muted); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.pk-row > .icon-svg { flex: none; color: var(--muted); }
+.pk-row .kb-cover { flex: none; }
+.pk-row .file-icon { flex: none; }
+.pk-dl { flex: none; text-decoration: none; }
+
+/* 共享知识库视觉终审抛光：高亮/滚动底距/徽章行换行/面包屑节奏/下载键 hover */
+.pk-sub .hl { background: var(--accent-soft); color: var(--accent); font-style: normal; font-weight: 600; border-radius: 3px; padding: 0 2px; }
+.pk-list { padding-bottom: 10px; }
+.peer-kb-top { flex-wrap: wrap; }
+.pk-crumb { margin: 2px 0 12px; min-height: 36px; }
+.pk-dl:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+@media (max-width: 768px) {
+  /* 共享知识库：手机全屏 */
+  .modal-mask.peer-kb-mask { padding: 0; }
+  .modal.peer-kb {
+    max-width: none; width: 100%; height: 100%; max-height: none; border-radius: 0;
+  }
+  .pk-search .btn { padding: 0 12px; }
+  .pk-crumb { flex-wrap: nowrap; overflow-x: auto; }
+}
