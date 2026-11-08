@@ -12,6 +12,7 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS+1)); }
 bad() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 
 [ -x "$BIN" ] || { echo "缺少 $BIN（先 go build -o $BIN .）"; exit 2; }
+command -v python3 >/dev/null || { echo "缺少 python3（断言依赖它解析 JSON）"; exit 2; }
 
 PA=""; PB=""
 cleanup() {
@@ -29,10 +30,14 @@ start_node() { # addr data port extra logfile var
   PEER_LAN_PORT="$3" PEER_LAN_EXTRA="$4" "$BIN" serve --addr "$1" --data "$2" > "$5" 2>&1 &
   local pid=$!
   for _ in $(seq 1 30); do
-    curl -s --max-time 1 "http://$1/healthz" 2>/dev/null | grep -q '"ok":true' && break
+    curl -s --max-time 1 "http://$1/healthz" 2>/dev/null | grep -q '"ok":true' && { echo "$pid"; return 0; }
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
   done
+  echo "节点启动失败: $1（日志 $5）" >&2
+  tail -n 20 "$5" >&2
   echo "$pid"
+  return 1
 }
 
 PA=$(start_node 127.0.0.1:18201 "$DA" 18211 127.0.0.1:18212 /tmp/ihp-a.log)

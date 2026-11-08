@@ -15,6 +15,7 @@ const (
 	outboxBackoffBase = 30  // 秒：30 → 60 → 120 → 240 → 480 封顶
 	outboxBackoffMax  = 480 // ≈8 分钟
 	outboxMaxMsgs     = 1000
+	outboxMaxAttempts = 200 // 重试上限：超过即弃投（防僵尸消息永久占位）
 )
 
 // OutboxMsg 一条待投递消息。
@@ -128,7 +129,7 @@ func (o *Outbox) Done(id string) {
 	}
 }
 
-// Fail 投递失败：指数退避后再试（对方回归时到期自动补投）。
+// Fail 投递失败：指数退避后再试（对方回归时到期自动补投）；重试超限弃投。
 func (o *Outbox) Fail(id string, cause error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -138,14 +139,36 @@ func (o *Outbox) Fail(id string, cause error) {
 		}
 		m := &o.Msgs[i]
 		m.Attempts++
-		delay := outboxBackoffBase << (m.Attempts - 1)
-		if delay > outboxBackoffMax {
-			delay = outboxBackoffMax
+		if m.Attempts >= outboxMaxAttempts {
+			// 僵尸消息：永久不可达的对方不再占位（删除节点/地址失效场景）
+			o.Msgs = append(o.Msgs[:i], o.Msgs[i+1:]...)
+			o.saveLocked()
+			return
+		}
+		delay := outboxBackoffMax
+		if m.Attempts <= 5 { // 30/60/120/240/480，之后恒 480（防移位溢出）
+			delay = outboxBackoffBase << (m.Attempts - 1)
 		}
 		m.NextAt = time.Now().Unix() + int64(delay)
 		m.LastErr = cause.Error()
 		o.saveLocked()
 		return
+	}
+}
+
+// Remove 清空某节点的全部待投消息（节点删除时不留僵尸重试）。
+func (o *Outbox) Remove(to string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	kept := make([]OutboxMsg, 0, len(o.Msgs))
+	for _, m := range o.Msgs {
+		if m.To != to {
+			kept = append(kept, m)
+		}
+	}
+	if len(kept) != len(o.Msgs) {
+		o.Msgs = kept
+		o.saveLocked()
 	}
 }
 

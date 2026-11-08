@@ -16,7 +16,7 @@ func (s *Server) peerView(p peer.Peer) map[string]any {
 	return map[string]any{
 		"id":        p.ID,
 		"id_pretty": peer.FormatID(p.ID),
-		"nickname":  p.Nickname,
+		"nickname":  p.DisplayNick(),
 		"source":    p.Source,
 		"addr":      p.Addr,
 		"trusted":   p.Trusted,
@@ -56,7 +56,7 @@ func (s *Server) meView() map[string]any {
 	return map[string]any{
 		"id":        s.PeerIdentity.NodeID(),
 		"id_pretty": peer.FormatID(s.PeerIdentity.NodeID()),
-		"nickname":  s.PeerIdentity.Nickname,
+		"nickname":  s.PeerIdentity.Nick(),
 	}
 }
 
@@ -160,9 +160,14 @@ func (s *Server) handlePeersPatch(w http.ResponseWriter, r *http.Request, u *sto
 
 // handlePeersDelete 删除节点。
 func (s *Server) handlePeersDelete(w http.ResponseWriter, r *http.Request, u *store.User) {
-	if !s.PeerTable.Remove(r.PathValue("id")) {
+	id := r.PathValue("id")
+	if !s.PeerTable.Remove(id) {
 		writeErr(w, http.StatusNotFound, 404, "节点不存在")
 		return
 	}
+	if s.PeerOutbox != nil {
+		s.PeerOutbox.Remove(id) // 不留僵尸重试占位
+	}
+	s.Store.AccessRemovePeer(id) // 不留残余授权
 	writeOK(w, nil)
 }

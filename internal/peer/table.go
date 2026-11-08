@@ -14,15 +14,25 @@ import (
 // Peer 已发现 / 已信任的节点。
 type Peer struct {
 	ID       string   `json:"id"`
-	Nickname string   `json:"nickname"`
+	Nickname string   `json:"nickname"`         // 对方自称（宣告/邀请刷新）
+	Remark   string   `json:"remark,omitempty"` // 本地备注（显示优先，宣告不覆盖）
 	Pub      string   `json:"pub"`
 	XPub     string   `json:"xpub,omitempty"` // X25519 公钥（信封加密用）
 	Addr     string   `json:"addr,omitempty"`
 	TCPPort  int      `json:"tcp_port,omitempty"`
-	Source   string   `json:"source"`  // lan | invite
-	Trusted  bool     `json:"trusted"` // 邀请码加入即信任（申请制前置）
+	Source   string   `json:"source"`            // lan | invite
+	Trusted  bool     `json:"trusted"`           // 邀请码加入即信任（申请制前置）
+	Removed  bool     `json:"removed,omitempty"` // 删除墓碑：防宣告把已删节点复活
 	LastSeen int64    `json:"last_seen"`
 	Scopes   []string `json:"scopes,omitempty"` // 已授予对方的访问范围（申请制）
+}
+
+// DisplayNick 显示名：本地备注优先，其次对方自称。
+func (p Peer) DisplayNick() string {
+	if p.Remark != "" {
+		return p.Remark
+	}
+	return p.Nickname
 }
 
 // Table 节点表：内存 map + peers.json 持久化（0600）。
@@ -46,11 +56,15 @@ func OpenTable(dir string) (*Table, error) {
 	return t, nil
 }
 
-// Upsert 合并节点信息（昵称/地址/端口取最新，信任并集，LastSeen 取最大）。
+// Upsert 合并节点信息（自称昵称/地址/端口取最新，备注不动，信任并集，LastSeen 取最大）。
+// 删除墓碑的节点只有邀请码显式加入才复活（防宣告 30s 一轮把删除顶掉）。
 func (t *Table) Upsert(p Peer) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	old, ok := t.peers[p.ID]
+	if ok && old.Removed && p.Source != "invite" {
+		return false // 已删节点不被宣告复活
+	}
 	changed := !ok
 	if ok {
 		if p.Nickname != "" && p.Nickname != old.Nickname {
@@ -67,9 +81,11 @@ func (t *Table) Upsert(p Peer) bool {
 		}
 		if p.Pub != "" && old.Pub == "" {
 			old.Pub = p.Pub
+			changed = true
 		}
 		if p.XPub != "" && old.XPub == "" {
 			old.XPub = p.XPub
+			changed = true
 		}
 		if len(p.Scopes) > 0 {
 			for _, sc := range p.Scopes {
@@ -92,6 +108,11 @@ func (t *Table) Upsert(p Peer) bool {
 		}
 		if p.Source == "invite" && old.Source != "invite" {
 			old.Source = p.Source
+			changed = true
+		}
+		if old.Removed && p.Source == "invite" {
+			old.Removed = false // 邀请码显式加回
+			changed = true
 		}
 		if p.LastSeen > old.LastSeen {
 			old.LastSeen = p.LastSeen
@@ -110,24 +131,30 @@ func (t *Table) Upsert(p Peer) bool {
 	return changed
 }
 
-// List 全量快照（最近出现优先）。
+// List 全量快照（最近出现优先；删除墓碑不外显）。
 func (t *Table) List() []Peer {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	out := make([]Peer, 0, len(t.peers))
 	for _, p := range t.peers {
+		if p.Removed {
+			continue
+		}
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen > out[j].LastSeen })
 	return out
 }
 
-// Get 单查。
+// Get 单查（删除墓碑视同不存在：其 RPC 也一并被拒）。
 func (t *Table) Get(id string) (Peer, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	p, ok := t.peers[id]
-	return p, ok
+	if !ok || p.Removed {
+		return Peer{}, false
+	}
+	return p, true
 }
 
 // GrantScopes 授权/更新已授予对方的访问范围（申请制批准时调用）。
@@ -144,7 +171,7 @@ func (t *Table) GrantScopes(id string, scopes []string) bool {
 	return true
 }
 
-// SetNickname 本地备注名（不改变对方自称）。
+// SetNickname 本地备注名（不改变对方自称；宣告刷新也不会覆盖备注）。
 func (t *Table) SetNickname(id, nick string) bool {
 	nick = SanitizeNick(nick)
 	if nick == "" {
@@ -153,23 +180,26 @@ func (t *Table) SetNickname(id, nick string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p, ok := t.peers[id]
-	if !ok {
+	if !ok || p.Removed {
 		return false
 	}
-	p.Nickname = nick
+	p.Remark = nick
 	t.peers[id] = p
 	t.saveLocked()
 	return true
 }
 
-// Remove 删除节点。
+// Remove 删除节点（打墓碑防宣告复活；邀请码显式加入才回来）。
 func (t *Table) Remove(id string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.peers[id]; !ok {
+	p, ok := t.peers[id]
+	if !ok || p.Removed {
 		return false
 	}
-	delete(t.peers, id)
+	p.Removed = true
+	p.Scopes = nil
+	t.peers[id] = p
 	t.saveLocked()
 	return true
 }

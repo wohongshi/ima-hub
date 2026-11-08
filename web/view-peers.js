@@ -1,8 +1,8 @@
 /* ImaHub — view-peers.js：节点页（P2P 局域网发现 / 邀请码互联） */
 'use strict';
 
-/* 昵称规则：中英文/数字/_-，≤24 字（与后端一致） */
-const PEER_NICK_RE = /^[\u4e00-\u9fffA-Za-z0-9_-]{1,24}$/;
+/* 昵称规则：任意语言字母/数字/_-，≤24 字（与后端 rune 计数一致） */
+const PEER_NICK_RE = /^[\p{L}\p{N}_-]{1,24}$/u;
 
 /* ============ 视图入口 ============ */
 async function renderPeersView(root) {
@@ -17,6 +17,15 @@ async function renderPeersView(root) {
   $('#peer-list', root).innerHTML = loading;
   $('#peer-access', root).innerHTML = loading;
   await Promise.all([loadPeersView(root), loadAccessCard(root)]);
+  /* 30s 自动刷新：新发现的节点/在线状态不过期发霉；路由切走（DOM 换掉）即停 */
+  clearTimeout(window.__peersPoll);
+  (function tick() {
+    window.__peersPoll = setTimeout(async function () {
+      if (!document.getElementById('peer-list')) return;
+      await loadPeersView(root);
+      tick();
+    }, 30000);
+  })();
 }
 
 /* 重新拉取节点数据（改名/增删后整体刷新，与后端保持一致） */
@@ -26,12 +35,16 @@ async function loadPeersView(root) {
     data = await apiGet('/api/peers');
   } catch (e) {
     const errHtml = '<div class="card-body"><div class="hint">节点信息加载失败，请稍后重试</div></div>';
-    $('#peer-me', root).innerHTML = errHtml;
-    $('#peer-list', root).innerHTML = errHtml;
+    const meBoxErr = $('#peer-me', root), listBoxErr = $('#peer-list', root);
+    if (meBoxErr) meBoxErr.innerHTML = errHtml;
+    if (listBoxErr) listBoxErr.innerHTML = errHtml;
     return;
   }
-  renderPeerMeCard($('#peer-me', root), data || {}, root);
-  renderPeerListCard($('#peer-list', root), data || {}, root);
+  const meBox = $('#peer-me', root);
+  const listBox = $('#peer-list', root);
+  if (!meBox || !listBox) return; // 路由已切走，丢弃过期响应
+  renderPeerMeCard(meBox, data || {}, root);
+  renderPeerListCard(listBox, data || {}, root);
 }
 
 /* ============ 卡一：我的节点 ============ */
@@ -195,7 +208,11 @@ function openInviteModal() {
     onMount: function (m) {
       $('#iv-go', m).addEventListener('click', async function () {
         const addr = $('#iv-addr', m).value.trim();
-        if (addr && !/^[^\s:]+:\d{1,5}$/.test(addr)) { toast('地址格式为 ip:port', 'warn'); return; }
+        if (addr) {
+          const m2 = /^(\[[0-9a-fA-F:]+\]|[^\s:]+):(\d{1,5})$/.exec(addr);
+          const port = m2 ? Number(m2[2]) : 0;
+          if (!m2 || port < 1 || port > 65535) { toast('地址格式为 ip:port（端口 1-65535）', 'warn'); return; }
+        }
         const btn = $('#iv-go', m);
         btn.disabled = true;
         try {

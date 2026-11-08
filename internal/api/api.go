@@ -40,6 +40,9 @@ type Server struct {
 	PeerOutbox   *peer.Outbox
 
 	rrCounters sync.Map // userID -> *int64，上传自动分配轮询计数
+
+	nonceMu    sync.Mutex
+	seenNonces map[string]int64 // 信封防重放：(From,Nonce) 只收一次（TTL 600s）
 }
 
 // ---------- 统一响应 ----------
@@ -844,11 +847,14 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		out["last_sync"] = lastSync
 	}
 	if s.PeerIdentity != nil {
-		out["p2p"] = map[string]any{
-			"id":        s.PeerIdentity.NodeID(),
-			"id_pretty": peer.FormatID(s.PeerIdentity.NodeID()),
-			"nickname":  s.PeerIdentity.Nickname,
-			"lan_port":  s.PeerLanPort,
+		if _, ok := s.authUser(r); ok {
+			// 节点指纹/昵称仅登录后可见（默认昵称是主机名，不给未鉴权方）
+			out["p2p"] = map[string]any{
+				"id":        s.PeerIdentity.NodeID(),
+				"id_pretty": peer.FormatID(s.PeerIdentity.NodeID()),
+				"nickname":  s.PeerIdentity.Nick(),
+				"lan_port":  s.PeerLanPort,
+			}
 		}
 	}
 	writeOK(w, out)

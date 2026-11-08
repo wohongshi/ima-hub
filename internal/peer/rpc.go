@@ -91,11 +91,11 @@ func PeerAddr(p Peer) string {
 	if p.Addr == "" {
 		return ""
 	}
-	if strings.Contains(p.Addr, ":") {
-		return p.Addr
+	if _, port, err := net.SplitHostPort(p.Addr); err == nil && port != "" {
+		return p.Addr // 已是 host:port（含 IPv6 [..]:port）
 	}
 	if p.TCPPort > 0 {
-		return net.JoinHostPort(p.Addr, strconv.Itoa(p.TCPPort))
+		return net.JoinHostPort(p.Addr, strconv.Itoa(p.TCPPort)) // JoinHostPort 自动给 IPv6 加括号
 	}
 	return ""
 }

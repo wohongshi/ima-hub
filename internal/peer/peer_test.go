@@ -17,8 +17,8 @@ func TestIdentityCreateReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Nickname != "甲-A" {
-		t.Fatalf("昵称不对: %q", id.Nickname)
+	if id.Nick() != "甲-A" {
+		t.Fatalf("昵称不对: %q", id.Nick())
 	}
 	if len(id.NodeID()) != 40 {
 		t.Fatalf("NodeID 长度不对: %d", len(id.NodeID()))
@@ -43,12 +43,12 @@ func TestIdentityCreateReload(t *testing.T) {
 	if err := id.SetNickname("乙|B<改>"); err != nil {
 		t.Fatal(err)
 	}
-	if id.Nickname != "乙B改" {
-		t.Fatalf("昵称净化不对: %q", id.Nickname)
+	if id.Nick() != "乙B改" {
+		t.Fatalf("昵称净化不对: %q", id.Nick())
 	}
 	id3, _ := LoadOrCreate(dir, "")
-	if id3.Nickname != "乙B改" {
-		t.Fatalf("昵称未持久化: %q", id3.Nickname)
+	if id3.Nick() != "乙B改" {
+		t.Fatalf("昵称未持久化: %q", id3.Nick())
 	}
 	// 私钥文件权限
 	fi, _ := filepath.Glob(filepath.Join(dir, "identity.json"))

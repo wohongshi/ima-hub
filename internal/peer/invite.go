@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,16 +37,34 @@ func (p *invitePayload) signStr() string {
 		p.ID, p.Pub, p.XPub, p.Nick, strings.Join(p.Addrs, ","), p.TS)
 }
 
+// validHostPort 校验 host:port（含 IPv6 [..]:port），端口 1-65535。
+func validHostPort(a string) error {
+	host, port, err := net.SplitHostPort(a)
+	if err != nil || host == "" {
+		return fmt.Errorf("对外地址必须是 host:port：%q", a)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("对外地址端口非法：%q", a)
+	}
+	return nil
+}
+
 // MakeInvite 生成邀请码（身份 + 地址 + 签名，60 天有效）。
 func (id *Identity) MakeInvite(addrs []string) (string, error) {
 	clean := make([]string, 0, len(addrs))
 	for _, a := range addrs {
-		if a = strings.TrimSpace(a); a != "" {
-			clean = append(clean, a)
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
 		}
+		if err := validHostPort(a); err != nil {
+			return "", err
+		}
+		clean = append(clean, a)
 	}
 	p := invitePayload{
-		V: 1, ID: id.NodeID(), Pub: hex.EncodeToString(id.Pub), XPub: hex.EncodeToString(id.XPub.Bytes()), Nick: id.Nickname,
+		V: 1, ID: id.NodeID(), Pub: hex.EncodeToString(id.Pub), XPub: hex.EncodeToString(id.XPub.Bytes()), Nick: id.Nick(),
 		Addrs: clean, TS: time.Now().Unix(),
 	}
 	p.Sig = hex.EncodeToString(id.Sign([]byte(p.signStr())))
@@ -54,7 +74,11 @@ func (id *Identity) MakeInvite(addrs []string) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	raw = append(raw, sum[:4]...)
-	return invitePrefix + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw), nil
+	code := invitePrefix + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)
+	if len(code) > inviteMaxLen {
+		return "", errors.New("邀请码超长（对外地址太多或太长）")
+	}
+	return code, nil
 }
 
 // ParseInvite 解析邀请码 → 可信节点（校验和 / 验签 / 时效三道闸）。
@@ -80,6 +104,9 @@ func ParseInvite(code string) (Peer, error) {
 	if err := json.Unmarshal(body, &p); err != nil {
 		return Peer{}, errors.New("邀请码解析失败")
 	}
+	if p.V != 1 {
+		return Peer{}, errors.New("邀请码版本不支持")
+	}
 	pub, err := hex.DecodeString(p.Pub)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return Peer{}, errors.New("邀请码公钥非法")
@@ -91,7 +118,7 @@ func ParseInvite(code string) (Peer, error) {
 	if err != nil || !Verify(ed25519.PublicKey(pub), []byte(p.signStr()), sig) {
 		return Peer{}, errors.New("邀请码验签失败")
 	}
-	if p.TS < time.Now().Unix()-inviteExpirySec {
+	if p.TS < time.Now().Unix()-inviteExpirySec || p.TS > time.Now().Unix()+replayWindowSec {
 		return Peer{}, errors.New("邀请码已过期")
 	}
 	addr := ""

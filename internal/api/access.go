@@ -39,6 +39,54 @@ func trimNote(s string) string {
 	return string(r)
 }
 
+// validKBs 知识库白名单净化：≤32 项、每项 ≤128 字符、去控制字符。
+func validKBs(kbs []string) []string {
+	out := make([]string, 0, len(kbs))
+	seen := map[string]bool{}
+	for _, k := range kbs {
+		k = strings.Map(func(r rune) rune {
+			if r < 32 || r == 127 {
+				return -1
+			}
+			return r
+		}, strings.TrimSpace(k))
+		if k == "" || len(k) > 128 || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+		if len(out) >= 32 {
+			break
+		}
+	}
+	return out
+}
+
+// recomputeGrants 按 received+approved（未过期）申请并集重算节点表授权。
+// 多条申请各管各的：撤销一条不会误清其他申请给的范围。
+func (s *Server) recomputeGrants(peerID string) {
+	now := time.Now().Unix()
+	union := map[string]bool{}
+	for _, ar := range s.Store.AccessList() {
+		if ar.Direction != "received" || ar.PeerID != peerID || ar.Status != "approved" {
+			continue
+		}
+		if ar.ExpiresAt > 0 && now > ar.ExpiresAt {
+			continue
+		}
+		for _, sc := range ar.Scopes {
+			union[sc] = true
+		}
+	}
+	out := []string{}
+	for _, sc := range []string{"search", "browse", "download"} {
+		if union[sc] {
+			out = append(out, sc)
+		}
+	}
+	s.PeerTable.GrantScopes(peerID, out)
+}
+
 func accessView(ar store.AccessRequest) map[string]any {
 	return map[string]any{
 		"id": ar.ID, "direction": ar.Direction, "peer_id": ar.PeerID, "peer_nick": ar.PeerNick,
@@ -96,18 +144,24 @@ func (s *Server) handleAccessCreate(w http.ResponseWriter, r *http.Request, u *s
 	now := time.Now().Unix()
 	ar := store.AccessRequest{
 		ID: "ar_" + store.RandomToken()[:12], Direction: "sent", PeerID: to.ID, PeerNick: to.Nickname,
-		Scopes: scopes, KBs: req.KBs, Note: trimNote(req.Note), Status: "pending",
+		Scopes: scopes, KBs: validKBs(req.KBs), Note: trimNote(req.Note), Status: "pending",
 		CreatedAt: now, UpdatedAt: now,
 	}
-	s.Store.AccessUpsert(ar)
-	msgID := ""
-	if s.PeerOutbox != nil {
-		msgID = s.PeerOutbox.Push(to.ID, "access.request", map[string]any{
-			"request_id": ar.ID, "from_nick": s.PeerIdentity.Nickname,
-			"scopes": scopes, "kbs": req.KBs, "note": ar.Note, "created_at": now,
-		})
-		s.PeerOutbox.Kick() // 入队立即投递一轮
+	// 先入投递队列：队列满/未启用时如实报错，不留「永远 pending 且永不送达」的假象
+	if s.PeerOutbox == nil {
+		writeBizErr(w, "离线投递未启用，无法发送申请")
+		return
 	}
+	msgID := s.PeerOutbox.Push(to.ID, "access.request", map[string]any{
+		"request_id": ar.ID, "from_nick": s.PeerIdentity.Nick(),
+		"scopes": scopes, "kbs": ar.KBs, "note": ar.Note, "created_at": now,
+	})
+	if msgID == "" {
+		writeBizErr(w, "投递队列已满，请稍后再试")
+		return
+	}
+	s.Store.AccessUpsert(ar)
+	s.PeerOutbox.Kick() // 入队立即投递一轮
 	writeOK(w, map[string]any{"request": accessView(ar), "delivery": "queued", "msg_id": msgID})
 }
 
@@ -134,6 +188,10 @@ func (s *Server) handleAccessDecide(w http.ResponseWriter, r *http.Request, u *s
 			writeBizErr(w, "只能批准收到的待决申请")
 			return
 		}
+		if _, ok := s.PeerTable.Get(ar.PeerID); !ok {
+			writeBizErr(w, "节点已不在列表中，无法授权（重新添加后再批准）")
+			return
+		}
 		scopes := ar.Scopes
 		if len(req.Scopes) > 0 {
 			v, ok := validScopes(req.Scopes)
@@ -143,8 +201,11 @@ func (s *Server) handleAccessDecide(w http.ResponseWriter, r *http.Request, u *s
 			}
 			scopes = v
 		}
+		if req.ExpiresAt > 0 && req.ExpiresAt <= now {
+			writeBizErr(w, "有效期必须在未来")
+			return
+		}
 		ar.Status, ar.Scopes, ar.UpdatedAt, ar.ExpiresAt = "approved", scopes, now, req.ExpiresAt
-		s.PeerTable.GrantScopes(ar.PeerID, scopes) // 授权记入节点表（代理访问用）
 	case "deny":
 		if ar.Direction != "received" || ar.Status != "pending" {
 			writeBizErr(w, "只能拒绝收到的待决申请")
@@ -152,24 +213,60 @@ func (s *Server) handleAccessDecide(w http.ResponseWriter, r *http.Request, u *s
 		}
 		ar.Status, ar.UpdatedAt = "denied", now
 	case "revoke":
-		// 撤回发出的申请 / 撤销已给的授权 / 放弃得到的授权
-		ar.Status, ar.UpdatedAt = "revoked", now
-		if ar.Direction == "received" {
-			s.PeerTable.GrantScopes(ar.PeerID, nil)
+		// 撤回发出的申请 / 撤销已给的授权 / 放弃得到的授权（仅 pending/approved 可撤）
+		if ar.Status != "pending" && ar.Status != "approved" {
+			writeBizErr(w, "该申请已是终态，无需撤销")
+			return
 		}
+		ar.Status, ar.UpdatedAt = "revoked", now
 	default:
 		writeBizErr(w, "action 只能是 approve/deny/revoke")
 		return
 	}
-	s.Store.AccessUpsert(ar)
+	if !s.Store.AccessUpsert(ar) {
+		writeBizErr(w, "状态冲突（存在更新的记录），请刷新后重试")
+		return
+	}
+	if ar.Direction == "received" {
+		s.recomputeGrants(ar.PeerID) // 授权入节点表（多申请并集，不误清别条）
+	}
 	if s.PeerOutbox != nil {
-		s.PeerOutbox.Push(ar.PeerID, "access.decision", map[string]any{
+		msgID := s.PeerOutbox.Push(ar.PeerID, "access.decision", map[string]any{
 			"request_id": ar.ID, "status": ar.Status, "scopes": ar.Scopes,
 			"expires_at": ar.ExpiresAt, "updated_at": ar.UpdatedAt,
 		})
+		if msgID == "" {
+			writeOK(w, map[string]any{"request": accessView(ar), "delivery": "dropped"})
+			return
+		}
 		s.PeerOutbox.Kick()
+		writeOK(w, map[string]any{"request": accessView(ar), "delivery": "queued", "msg_id": msgID})
+		return
 	}
-	writeOK(w, map[string]any{"request": accessView(ar), "delivery": "queued"})
+	writeOK(w, map[string]any{"request": accessView(ar), "delivery": "off"})
+}
+
+// seenNonce 防重放登记：同 (From,Nonce) 只接受一次；顺手清 600s 前的旧条目。
+func (s *Server) seenNonce(from, nonce string) bool {
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	if s.seenNonces == nil {
+		s.seenNonces = map[string]int64{}
+	}
+	key := from + "|" + nonce
+	now := time.Now().Unix()
+	if _, dup := s.seenNonces[key]; dup {
+		return true
+	}
+	if len(s.seenNonces) > 4096 {
+		for k, t := range s.seenNonces {
+			if now-t > 600 {
+				delete(s.seenNonces, k)
+			}
+		}
+	}
+	s.seenNonces[key] = now
+	return false
 }
 
 // handlePeerRPC 节点间 RPC 通道：免 Cookie，信封 Ed25519 签名鉴权 + X25519 加密封载。
@@ -184,6 +281,11 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	if e.To != s.PeerIdentity.NodeID() {
 		writeErr(w, http.StatusBadRequest, 400, "信封不是发给本节点")
+		return
+	}
+	if s.seenNonce(e.From, e.Nonce) {
+		// 同 (From,Nonce) 重放：幂等吞掉（信封窗口 ±300s 内抓包重发也无效）
+		writeOK(w, map[string]any{"ok": true, "dup": true})
 		return
 	}
 	p, ok := s.PeerTable.Get(e.From)
@@ -237,15 +339,29 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 			writeOK(w, map[string]any{"ok": true, "dup": true})
 			return
 		}
+		// 每节点待决上限：防未鉴权邻居无限灌记录（全局上限由 store accessCap 兜底）
+		pending := 0
+		for _, x := range s.Store.AccessList() {
+			if x.Direction == "received" && x.PeerID == e.From && x.Status == "pending" {
+				pending++
+			}
+		}
+		if pending >= 32 {
+			writeOK(w, map[string]any{"ok": false, "error": "对方待决申请过多，已拒绝"})
+			return
+		}
 		created := in.CreatedAt
 		if created <= 0 {
 			created = now
 		}
-		s.Store.AccessUpsert(store.AccessRequest{
+		if !s.Store.AccessUpsert(store.AccessRequest{
 			ID: in.RequestID, Direction: "received", PeerID: e.From, PeerNick: peer.SanitizeNick(in.FromNick),
-			Scopes: scopes, KBs: in.KBs, Note: trimNote(in.Note), Status: "pending",
+			Scopes: scopes, KBs: validKBs(in.KBs), Note: trimNote(in.Note), Status: "pending",
 			CreatedAt: created, UpdatedAt: now,
-		})
+		}) {
+			writeOK(w, map[string]any{"ok": false, "error": "申请被拒（容量满）"})
+			return
+		}
 	case "access.decision":
 		var in struct {
 			RequestID string   `json:"request_id"`
@@ -265,22 +381,38 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ar, ok := s.Store.AccessGet(in.RequestID)
-		if !ok || ar.Direction != "sent" {
-			// 未知/错向申请：幂等吞掉（重投安全）
+		if !ok {
+			// 未知申请：幂等吞掉（重投安全）
 			writeOK(w, map[string]any{"ok": true, "dup": true})
 			return
 		}
-		ar.Status = in.Status
-		if len(in.Scopes) > 0 {
-			ar.Scopes = in.Scopes
-		}
-		ar.ExpiresAt = in.ExpiresAt
 		upd := in.UpdatedAt
-		if upd <= 0 {
-			upd = now
+		if upd <= 0 || upd > now {
+			upd = now // 钳制远端时钟：防超前时间戳劫持 LWW 锁死本地撤销
 		}
-		ar.UpdatedAt = upd
-		s.Store.AccessUpsert(ar)
+		switch {
+		case ar.Direction == "sent" && ar.PeerID == e.From:
+			// 对方回传的审批结果（发送方绑定：第三方伪造的决策一律无效）
+			ar.Status = in.Status
+			if len(in.Scopes) > 0 {
+				if v, vok := validScopes(in.Scopes); vok {
+					ar.Scopes = v
+				}
+			}
+			ar.ExpiresAt = in.ExpiresAt
+			ar.UpdatedAt = upd
+			s.Store.AccessUpsert(ar)
+		case ar.Direction == "received" && ar.PeerID == e.From &&
+			(in.Status == "revoked" || in.Status == "expired"):
+			// 对方撤回/放弃其申请：本地同步终态并清授予（防残留授权继续放行）
+			ar.Status = in.Status
+			ar.UpdatedAt = upd
+			s.Store.AccessUpsert(ar)
+			s.recomputeGrants(ar.PeerID)
+		default:
+			writeOK(w, map[string]any{"ok": true, "dup": true})
+			return
+		}
 	default:
 		writeErr(w, http.StatusBadRequest, 400, "未知消息类型: "+e.Kind)
 		return

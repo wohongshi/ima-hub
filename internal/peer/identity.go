@@ -13,12 +13,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 )
 
 // Identity 节点身份：Ed25519 密钥对（签名/身份）+ X25519 密钥对（载荷加密）+ 昵称。
-// 私钥永不出本机。
+// 私钥永不出本机。昵称字段并发读写（HTTP 改名 × 宣告循环），一律经 Nick()/SetNickname。
 type Identity struct {
+	mu   sync.RWMutex
 	dir  string
 	Pub  ed25519.PublicKey
 	Priv ed25519.PrivateKey
@@ -26,7 +29,9 @@ type Identity struct {
 	XPriv *ecdh.PrivateKey
 	XPub  *ecdh.PublicKey
 
-	Nickname string
+	nick string
+	// 单调时间戳：同秒自增，宣告帧严格递增（收方据此拒绝旧帧重放）
+	lastTS int64
 }
 
 type identityFile struct {
@@ -50,9 +55,9 @@ func LoadOrCreate(dir, nickname string) (*Identity, error) {
 		}
 		id.Priv = ed25519.PrivateKey(priv)
 		id.Pub = id.Priv.Public().(ed25519.PublicKey)
-		id.Nickname = SanitizeNick(f.Nick)
-		if id.Nickname == "" {
-			id.Nickname = "节点-" + id.NodeID()[:6]
+		id.nick = SanitizeNick(f.Nick)
+		if id.nick == "" {
+			id.nick = "节点-" + id.NodeID()[:6]
 		}
 		if f.XPriv != "" {
 			xp, err := hex.DecodeString(f.XPriv)
@@ -71,7 +76,7 @@ func LoadOrCreate(dir, nickname string) (*Identity, error) {
 				return nil, err
 			}
 			id.XPriv, id.XPub = k, k.Public().(*ecdh.PublicKey)
-			if err := id.save(); err != nil {
+			if err := id.saveLocked(); err != nil {
 				return nil, err
 			}
 		}
@@ -89,21 +94,49 @@ func LoadOrCreate(dir, nickname string) (*Identity, error) {
 		return nil, err
 	}
 	id.XPriv, id.XPub = xk, xk.Public().(*ecdh.PublicKey)
-	id.Nickname = SanitizeNick(nickname)
-	if id.Nickname == "" {
-		id.Nickname = "节点-" + id.NodeID()[:6]
+	id.nick = SanitizeNick(nickname)
+	if id.nick == "" {
+		id.nick = "节点-" + id.NodeID()[:6]
 	}
-	if err := id.save(); err != nil {
+	if err := id.saveLocked(); err != nil {
 		return nil, err
 	}
 	return id, nil
 }
 
-func (id *Identity) save() error {
-	raw, _ := json.MarshalIndent(identityFile{
-		Priv: hex.EncodeToString(id.Priv), XPriv: hex.EncodeToString(id.XPriv.Bytes()), Nick: id.Nickname,
+// saveLocked 原子落盘（tmp+rename，防写一半损坏丢节点身份）；构造期/持 id.mu 时调用。
+func (id *Identity) saveLocked() error {
+	raw, err := json.MarshalIndent(identityFile{
+		Priv: hex.EncodeToString(id.Priv), XPriv: hex.EncodeToString(id.XPriv.Bytes()), Nick: id.nick,
 	}, "", " ")
-	return os.WriteFile(filepath.Join(id.dir, "identity.json"), raw, 0o600)
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(id.dir, "identity.json")
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, final)
+}
+
+// Nick 读昵称（并发安全：宣告循环/邀请/HTTP 同时读写）。
+func (id *Identity) Nick() string {
+	id.mu.RLock()
+	defer id.mu.RUnlock()
+	return id.nick
+}
+
+// NextTS 单调时间戳（同秒自增）：每帧严格递增，收方拒绝 TS 不增的旧帧/重放。
+func (id *Identity) NextTS() int64 {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	now := time.Now().Unix()
+	if now <= id.lastTS {
+		now = id.lastTS + 1
+	}
+	id.lastTS = now
+	return now
 }
 
 // SetNickname 更新昵称并持久化。
@@ -112,8 +145,15 @@ func (id *Identity) SetNickname(nick string) error {
 	if n == "" {
 		return errors.New("昵称不合法（中英文/数字/_-，≤24 字）")
 	}
-	id.Nickname = n
-	return id.save()
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	old := id.nick
+	id.nick = n
+	if err := id.saveLocked(); err != nil {
+		id.nick = old // 落盘失败回滚，内存与磁盘一致
+		return err
+	}
+	return nil
 }
 
 // NodeID 节点 ID = 公钥 SHA-256 前 20 字节 hex（40 字符，类 Syncthing 设备指纹）。
@@ -149,15 +189,17 @@ func FormatID(nodeID string) string {
 	return b.String()
 }
 
-// SanitizeNick 昵称白名单：中英文/数字/_-，最长 24 字符。
+// SanitizeNick 昵称白名单：中英文/数字/_-，最长 24 字符（按字符计，不是字节）。
 func SanitizeNick(s string) string {
 	var b strings.Builder
+	n := 0
 	for _, r := range strings.TrimSpace(s) {
-		if b.Len() >= 24 {
+		if n >= 24 {
 			break
 		}
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
 			b.WriteRune(r)
+			n++
 		}
 	}
 	return b.String()

@@ -97,11 +97,14 @@ func main() {
 	srv.PeerTable = ptable
 	srv.PeerLanPort = peer.LanPort()
 	// 宣告里的直连端口 = 本服务 HTTP 端口（对方经 /api/peer/rpc 找我们）
-	apiPort := 8090
+	apiPort := 0
 	if _, p, err := net.SplitHostPort(*addr); err == nil {
-		if n, err := strconv.Atoi(p); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
 			apiPort = n
 		}
+	}
+	if apiPort == 0 {
+		log.Fatalf("--addr 必须带固定端口（如 :8090）；P2P 直连要宣告可达端口，0/未知端口拒绝启动")
 	}
 	pob, err := peer.OpenOutbox(*dataDir)
 	if err != nil {
@@ -110,10 +113,16 @@ func main() {
 	srv.PeerOutbox = pob
 	srv.PeerAPIPort = apiPort
 	stopLan := make(chan struct{})
-	go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, stopLan) // 发现即补投
-	go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投：掉线消息自动重试
-	defer close(stopLan)
-	log.Printf("节点 ID: %s（%s）· 局域网发现 %d/udp · 直连 %d/tcp", peer.FormatID(pid.NodeID()), pid.Nickname, srv.PeerLanPort, apiPort)
+	if mode == "client" {
+		// 客户端模式默认只听本机，宣告出去是不可达地址——不参与 P2P
+		close(stopLan)
+		log.Printf("客户端模式：P2P 发现/离线投递未启用")
+	} else {
+		go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, stopLan) // 发现即补投
+		go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投：掉线消息自动重试
+		defer close(stopLan)
+		log.Printf("节点 ID: %s（%s）· 局域网发现 %d/udp · 直连 %d/tcp", peer.FormatID(pid.NodeID()), pid.Nick(), srv.PeerLanPort, apiPort)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())

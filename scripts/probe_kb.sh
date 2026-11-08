@@ -39,10 +39,14 @@ start_node() { # addr data lanport extra logfile ima_base
   PEER_LAN_PORT="$3" PEER_LAN_EXTRA="$4" "$BIN" serve --addr "$1" --data "$2" ${6:+--ima-base-url "$6"} > "$5" 2>&1 &
   local pid=$!
   for _ in $(seq 1 30); do
-    curl -s --max-time 1 "http://$1/healthz" 2>/dev/null | grep -q '"ok":true' && break
+    curl -s --max-time 1 "http://$1/healthz" 2>/dev/null | grep -q '"ok":true' && { echo "$pid"; return 0; }
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
   done
+  echo "节点启动失败: $1（日志 $5）" >&2
+  tail -n 20 "$5" >&2
   echo "$pid"
+  return 1
 }
 
 PA=$(start_node 127.0.0.1:18201 "$DA" 18211 127.0.0.1:18212 /tmp/ihk-a.log "")
@@ -147,6 +151,32 @@ echo "== 撤销即断 =="
 curl -s -b $JB -X POST $B/api/access/requests/$RID3/decide -H 'Content-Type: application/json' -d '{"action":"revoke"}' >/dev/null
 R=$(curl -s -b $JA "$A/api/peers/$IDB/kb/download?kb=kb1&media=m_a&name=a.pdf")
 echo "$R" | grep -q 'download' && ok "撤销后下载即断" || bad "撤销后仍可下载: $R"
+
+echo "== 拒绝路径（denied 回传 + 无授权） =="
+RID4=$(curl -s -b $JA -X POST $A/api/access/requests -H 'Content-Type: application/json' \
+  -d "{\"to\":\"$IDB\",\"scopes\":[\"search\"]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['request']['id'])" 2>/dev/null)
+for _ in $(seq 1 15); do
+  curl -s -b $JB "$B/api/access/requests?dir=received" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']['requests']
+assert any(r['id']=='$RID4' and r['status']=='pending' for r in d)" 2>/dev/null && break
+  sleep 1
+done
+R=$(curl -s -b $JB -X POST $B/api/access/requests/$RID4/decide -H 'Content-Type: application/json' -d '{"action":"deny"}')
+echo "$R" | grep -q '"code":0' && ok "拒绝操作返回成功" || bad "拒绝操作异常: $R"
+got=""
+for _ in $(seq 1 15); do
+  got=$(curl -s -b $JA $A/api/access/requests | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']['requests']
+m=[r for r in d if r['id']=='$RID4']
+print('yes' if m and m[0]['status']=='denied' else '')" 2>/dev/null)
+  [ -n "$got" ] && break
+  sleep 1
+done
+[ -n "$got" ] && ok "拒绝回传（denied）" || bad "拒绝未回传 A"
+R=$(curl -s -b $JA -X POST $A/api/peers/$IDB/kb/search -H 'Content-Type: application/json' -d '{"q":"数学"}')
+echo "$R" | grep -q '"code":0' && ok "拒绝后其他已批授权仍生效（search 未被误清）" || bad "拒绝误伤已有授权: $R"
 
 echo "== 边角 =="
 R=$(curl -s -b $JA "$A/api/peers/no-such-peer/kbs")

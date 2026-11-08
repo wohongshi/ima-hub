@@ -63,8 +63,8 @@ func (p *Packet) payload() string {
 
 // MakePacket 生成带签名的宣告/应答帧。
 func MakePacket(id *Identity, tcpPort int, announce bool) Packet {
-	p := Packet{V: 1, A: announce, ID: id.NodeID(), Nick: id.Nickname,
-		Pub: hex.EncodeToString(id.Pub), XPub: hex.EncodeToString(id.XPub.Bytes()), TCP: tcpPort, TS: time.Now().Unix()}
+	p := Packet{V: 1, A: announce, ID: id.NodeID(), Nick: id.Nick(),
+		Pub: hex.EncodeToString(id.Pub), XPub: hex.EncodeToString(id.XPub.Bytes()), TCP: tcpPort, TS: id.NextTS()}
 	p.Sig = hex.EncodeToString(id.Sign([]byte(p.payload())))
 	return p
 }
@@ -125,9 +125,10 @@ func RunLAN(id *Identity, t *Table, tcpPort int, onPeer func(Peer), stop <-chan 
 		return append(out, lanExtras()...)
 	}
 
-	// 收包协程：验证 → 入表 → 对宣告帧立即应答
+	// 收包协程：验证 → 防重放 → 入表 → 对宣告帧立即应答
 	go func() {
 		buf := make([]byte, 64*1024)
+		lastTS := map[string]int64{} // 每 NodeID 已见最高 TS（TS 已签名，篡改无效）
 		for {
 			n, from, err := rx.ReadFromUDP(buf)
 			if err != nil {
@@ -143,6 +144,10 @@ func RunLAN(id *Identity, t *Table, tcpPort int, onPeer func(Peer), stop <-chan 
 			if err := VerifyPacket(p); err != nil {
 				continue // 坏包静默丢弃
 			}
+			if p.TS <= lastTS[p.ID] {
+				continue // 旧帧重放：拒绝（防抓包改源地址劫持节点指向）
+			}
+			lastTS[p.ID] = p.TS
 			host, _, _ := net.SplitHostPort(from.String())
 			np := Peer{
 				ID: p.ID, Nickname: SanitizeNick(p.Nick), Pub: p.Pub, XPub: p.XPub,
