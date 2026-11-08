@@ -11,3 +11,4 @@ data/
 *.log
 .buildlogs/
 .DS_Store
+readme_render.html
