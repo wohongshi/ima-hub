@@ -118,7 +118,11 @@ a { color: var(--accent); text-decoration: none; }
 .form-row > * { flex: 1; min-width: 0; }
 
 .checkbox { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13.5px; user-select: none; }
-.checkbox input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.checkbox input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; border-radius: 4px; }
+
+/* 弹窗内表单抛光：说明文字对比度、字段组间距（视觉终审修订） */
+.modal .hint { color: var(--text-2); }
+.modal .field + .field { margin-top: 6px; }
 
 .switch { position: relative; width: 40px; height: 22px; flex: none; cursor: pointer; }
 .switch input { opacity: 0; width: 0; height: 0; }
