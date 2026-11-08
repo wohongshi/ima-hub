@@ -6,6 +6,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"hash/fnv"
 	"io/fs"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -154,6 +156,32 @@ func spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
 				return
 			}
 		}
+		if isStaticAsset(p) {
+			// ETag + must-revalidate：内容不变回 304 省流量，发版即生效（无需版本号簿记）
+			if data, err := fs.ReadFile(sub, path.Clean(strings.TrimPrefix(p, "/"))); err == nil {
+				h := fnv.New32a()
+				h.Write(data)
+				etag := `"` + strconv.FormatUint(uint64(h.Sum32()), 16) + `"`
+				w.Header().Set("ETag", etag)
+				w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+				if r.Header.Get("If-None-Match") == etag {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+			}
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// isStaticAsset 可指纹缓存的静态资源（HTML 始终 no-cache）。
+func isStaticAsset(p string) bool {
+	for _, ext := range []string{".js", ".css", ".png", ".svg", ".ico", ".jpg", ".jpeg", ".gif", ".woff", ".woff2"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return false
 }

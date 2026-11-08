@@ -328,7 +328,8 @@ func (s *Server) handleImaDownload(w http.ResponseWriter, r *http.Request, u *st
 		mt := ima.MIMEForFile(name)
 		base := strings.ToLower(strings.TrimSpace(strings.SplitN(mt, ";", 2)[0]))
 		switch base {
-		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "application/pdf":
+		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "application/pdf",
+			"audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/x-wav", "audio/ogg":
 			w.Header().Set("Content-Type", mt)
 		case "text/plain", "text/markdown":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -190,39 +190,57 @@ func (s *Scanner) run() {
 	newFiles := []NewFile{}
 	firstSeen := map[string]int64{}
 
-	for _, acc := range accs {
-		st := AccountStat{ID: acc.ID, UserID: acc.UserID, Name: acc.Name}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		kbs, err := acc.Client.SearchKnowledgeBase(ctx, "", "", 50)
-		if err != nil {
-			st.Error = err.Error()
-			cancel()
-			snap.Accounts = append(snap.Accounts, st)
-			s.mu.Lock()
-			s.done++
-			s.mu.Unlock()
-			continue
-		}
-		st.KBs = len(kbs.InfoList)
-		accTypes := map[string]int{}
-		for _, kb := range kbs.InfoList {
-			files, folders, werr := s.walkKB(ctx, acc.Client, kb.ID, kb.Name, acc, accTypes, &newFiles, firstSeen, now)
-			st.Files += files
-			st.Folders += folders
-			if werr != nil && st.Error == "" {
-				st.Error = werr.Error()
+	// 并发扫各账号（单账号 10 分钟上限），共享状态在锁内合并
+	var wg sync.WaitGroup
+	results := make([]AccountStat, len(accs))
+	for i := range accs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() {
+				s.mu.Lock()
+				s.done++
+				s.mu.Unlock()
+			}()
+			acc := accs[i]
+			st := AccountStat{ID: acc.ID, UserID: acc.UserID, Name: acc.Name}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			kbs, err := acc.Client.SearchKnowledgeBase(ctx, "", "", 50)
+			if err != nil {
+				st.Error = err.Error()
+				results[i] = st
+				return
 			}
-		}
-		st.Types = accTypes
-		for t, c := range accTypes {
-			typeCount[t] += c
-		}
-		cancel()
-		snap.Accounts = append(snap.Accounts, st)
-		s.mu.Lock()
-		s.done++
-		s.mu.Unlock()
+			st.KBs = len(kbs.InfoList)
+			accTypes := map[string]int{}
+			localNew := []NewFile{}
+			localSeen := map[string]int64{}
+			for _, kb := range kbs.InfoList {
+				files, folders, werr := s.walkKB(ctx, acc.Client, kb.ID, kb.Name, acc, accTypes, &localNew, localSeen, now)
+				st.Files += files
+				st.Folders += folders
+				if werr != nil && st.Error == "" {
+					st.Error = werr.Error()
+				}
+			}
+			st.Types = accTypes
+			results[i] = st
+			s.mu.Lock()
+			for t, c := range accTypes {
+				typeCount[t] += c
+			}
+			newFiles = append(newFiles, localNew...)
+			for k, v := range localSeen {
+				if _, ok := firstSeen[k]; !ok {
+					firstSeen[k] = v
+				}
+			}
+			s.mu.Unlock()
+		}(i)
 	}
+	wg.Wait()
+	snap.Accounts = append(snap.Accounts, results...)
 
 	for _, a := range snap.Accounts {
 		snap.KBs += a.KBs

@@ -321,8 +321,49 @@ async function showApp() {
   }
 }
 
+/* ============ 上传队列角标（>0 时显示，点击直达队列卡） ============ */
+function initQueuePill() {
+  if ($('#queue-pill')) return;
+  const anchor = $('#top-theme-btn');
+  if (!anchor || !anchor.parentNode) return;
+  const pill = document.createElement('button');
+  pill.id = 'queue-pill';
+  pill.className = 'conn-pill hidden';
+  pill.title = '上传队列';
+  anchor.parentNode.insertBefore(pill, anchor);
+  pill.addEventListener('click', function () {
+    location.hash = '#/settings';
+    setTimeout(function () {
+      const card = $('#set-queue');
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+  });
+  refreshQueuePill();
+  if (!window.__queuePillTimer) {
+    window.__queuePillTimer = setInterval(refreshQueuePill, 60000);
+  }
+}
+
+async function refreshQueuePill() {
+  const pill = $('#queue-pill');
+  if (!pill) return;
+  try {
+    const d = await apiGet('/api/queue', { silent: true });
+    const n = (d.items || []).length;
+    if (n > 0) {
+      pill.innerHTML = icon('upload', 13) + '<span>' + n + '</span>';
+      pill.classList.remove('hidden');
+    } else {
+      pill.classList.add('hidden');
+    }
+  } catch (e) {
+    pill.classList.add('hidden');
+  }
+}
+
 function route() {
   if ($('#app-view').classList.contains('hidden')) return;
+  initQueuePill();
   const hash = (location.hash || '#/home').replace(/^#\/?/, '');
   const name = (hash.split('?')[0] || 'home').split('/')[0] || 'home';
 

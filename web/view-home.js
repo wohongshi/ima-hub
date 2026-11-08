@@ -448,7 +448,7 @@ function renderHomeAnnouncements(list) {
     '<span class="announce-icon">' + icon('inbox', 15) + '</span>' +
     '<div class="announce-body">';
   if (latest) {
-    html += '<span class="announce-text">' + escapeHtml(latest.content) + '</span>' +
+    html += '<div class="announce-text">' + renderMarkdown(latest.content) + '</div>' +
       '<span class="announce-meta">' + escapeHtml(latest.by || '') + ' · ' + escapeHtml(relativeTime(latest.created_at)) + '</span>';
     if (list.length > 1) {
       html += '<button class="btn sm ghost" id="ann-more">共 ' + list.length + ' 条</button>';
@@ -476,7 +476,7 @@ function openAnnouncementModal(list, readOnly) {
   const canManage = (typeof state !== 'undefined' && state.user && state.user.role === 'admin') && !isClientMode();
   const rowsHtml = (list || []).map(function (a) {
     return '<div class="ann-item" data-id="' + escapeHtml(String(a.id)) + '">' +
-      '<div class="ann-item-body"><div>' + escapeHtml(a.content) + '</div>' +
+      '<div class="ann-item-body"><div>' + renderMarkdown(a.content) + '</div>' +
       '<div class="muted" style="font-size:11.5px;margin-top:4px">' + escapeHtml(a.by || '') + ' · ' + escapeHtml(formatTime(a.created_at)) + '</div></div>' +
       (canManage ? '<button class="btn icon sm ghost" data-del title="删除" style="color:var(--danger)">' + icon('trash', 13) + '</button>' : '') +
       '</div>';

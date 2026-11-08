@@ -486,13 +486,15 @@ function openMediaDetail(mediaId, ia) {
     else if (ui && typeof ui === 'object') url = ui.url || '';
     if (url) html += '<dt>链接</dt><dd><a class="md-link mono" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer" style="font-size:12px">' + escapeHtml(url) + '</a></dd>';
     html += '</dl>';
-    // 在线预览：图片 / PDF / 文本类
-    const previewKind = ({ 1: 'pdf', 9: 'image', 7: 'text', 13: 'text', 20: 'text' })[mt] || '';
+    // 在线预览：图片 / PDF / 音频 / 文本类
+    const previewKind = ({ 1: 'pdf', 9: 'image', 7: 'text', 13: 'text', 20: 'text', 15: 'audio', 16: 'audio' })[mt] || '';
     const src = '/api/ima/download?media_id=' + encodeURIComponent(mediaId) + (ia ? '&ia=' + encodeURIComponent(ia) : '') + '&inline=1';
     if (previewKind === 'image') {
       html += '<div class="preview-box"><img class="preview-img" src="' + src + '" alt="预览"></div>';
     } else if (previewKind === 'pdf') {
       html += '<div class="preview-box"><iframe class="preview-frame" src="' + src + '"></iframe></div>';
+    } else if (previewKind === 'audio') {
+      html += '<div class="preview-box"><audio controls preload="metadata" style="width:100%" src="' + src + '"></audio></div>';
     } else if (previewKind === 'text') {
       html += '<div class="preview-box" id="preview-box"><div class="loading-center" style="padding:18px 0"><div class="spinner"></div><div>加载预览…</div></div></div>';
     }

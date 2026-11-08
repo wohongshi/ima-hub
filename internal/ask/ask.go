@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"imahub/internal/ima"
@@ -92,43 +93,68 @@ type kbRef struct {
 	kbName string
 }
 
-// retrieve 跨账号跨知识库检索（search_knowledge 全文匹配），失败逐路收集不静默。
+// retrieve 跨账号跨知识库检索（search_knowledge 全文匹配），账号间并发、失败逐路收集。
 func retrieve(ctx context.Context, accs []Account, question string, opt Options) ([]Source, []string) {
-	seen := map[string]bool{}
-	out := []Source{}
-	errs := []string{}
-	// 先收集知识库（每个账号最多 50 个）
-	for _, acc := range accs {
-		kbs, err := acc.Client.SearchKnowledgeBase(ctx, "", "", 50)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("账号「%s」知识库列表失败：%v", acc.Name, err))
-			continue
-		}
-		for _, kb := range kbs.InfoList {
-			if opt.KBID != "" && kb.ID != opt.KBID {
-				continue
-			}
-			rsp, err := acc.Client.SearchKnowledge(ctx, kb.ID, question, "")
+	type accOut struct {
+		sources []Source
+		errs    []string
+	}
+	outs := make([]accOut, len(accs))
+	var wg sync.WaitGroup
+	for i := range accs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			acc := accs[i]
+			actx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			kbs, err := acc.Client.SearchKnowledgeBase(actx, "", "", 50)
 			if err != nil {
-				errs = append(errs, fmt.Sprintf("知识库「%s」检索失败：%v", kb.Name, err))
-				continue
+				outs[i].errs = append(outs[i].errs, fmt.Sprintf("账号「%s」知识库列表失败：%v", acc.Name, err))
+				return
 			}
-			for _, hit := range rsp.InfoList {
-				if seen[hit.MediaID] {
+			seen := map[string]bool{}
+			for _, kb := range kbs.InfoList {
+				if opt.KBID != "" && kb.ID != opt.KBID {
 					continue
 				}
-				seen[hit.MediaID] = true
-				out = append(out, Source{
-					IA: acc.ID, AccountName: acc.Name,
-					KBID: kb.ID, KBName: kb.Name,
-					MediaID: hit.MediaID, Title: hit.Title,
-					Snippet: cleanHighlight(hit.HighlightContent),
-				})
-				if len(out) >= opt.TopK*2 {
-					return out, errs
+				rsp, err := acc.Client.SearchKnowledge(actx, kb.ID, question, "")
+				if err != nil {
+					outs[i].errs = append(outs[i].errs, fmt.Sprintf("知识库「%s」检索失败：%v", kb.Name, err))
+					continue
+				}
+				for _, hit := range rsp.InfoList {
+					if seen[hit.MediaID] {
+						continue
+					}
+					seen[hit.MediaID] = true
+					outs[i].sources = append(outs[i].sources, Source{
+						IA: acc.ID, AccountName: acc.Name,
+						KBID: kb.ID, KBName: kb.Name,
+						MediaID: hit.MediaID, Title: hit.Title,
+						Snippet: cleanHighlight(hit.HighlightContent),
+					})
+					if len(outs[i].sources) >= opt.TopK*2 {
+						return
+					}
 				}
 			}
+		}(i)
+	}
+	wg.Wait()
+	// 按账号顺序合并，跨账号重复 media_id 去重
+	out := []Source{}
+	errs := []string{}
+	merged := map[string]bool{}
+	for i := range outs {
+		for _, s := range outs[i].sources {
+			if merged[s.MediaID] {
+				continue
+			}
+			merged[s.MediaID] = true
+			out = append(out, s)
 		}
+		errs = append(errs, outs[i].errs...)
 	}
 	return out, errs
 }
