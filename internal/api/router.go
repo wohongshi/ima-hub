@@ -43,6 +43,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/queue/{id}/retry", s.requireAuth(s.handleQueueRetry))
 	mux.HandleFunc("DELETE /api/queue/{id}", s.requireAuth(s.handleQueueDelete))
 
+	// P2P 节点：身份 / 局域网发现 / 邀请码
+	mux.HandleFunc("GET /api/peers", s.requireAuth(s.handlePeers))
+	mux.HandleFunc("GET /api/peers/me", s.requireAuth(s.handlePeersMe))
+	mux.HandleFunc("PATCH /api/peers/me", s.requireAuth(s.handlePeersMeNickname))
+	mux.HandleFunc("POST /api/peers/me/invite", s.requireAuth(s.handlePeersMakeInvite))
+	mux.HandleFunc("POST /api/peers/invite", s.requireAuth(s.handlePeersAddInvite))
+	mux.HandleFunc("PATCH /api/peers/{id}", s.requireAuth(s.handlePeersPatch))
+	mux.HandleFunc("DELETE /api/peers/{id}", s.requireAuth(s.handlePeersDelete))
+
+	// 访问申请制共享（请求/审批/撤销）
+	mux.HandleFunc("GET /api/access/requests", s.requireAuth(s.handleAccessList))
+	mux.HandleFunc("POST /api/access/requests", s.requireAuth(s.handleAccessCreate))
+	mux.HandleFunc("POST /api/access/requests/{id}/decide", s.requireAuth(s.handleAccessDecide))
+	// 节点间 RPC（免 Cookie：信封 Ed25519 签名鉴权 + X25519 加密封载）
+	mux.HandleFunc("POST /api/peer/rpc", s.handlePeerRPC)
+
 	// 管理
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminUsers))
 	mux.HandleFunc("POST /api/admin/users", s.requireAdmin(s.handleAdminCreateUser))

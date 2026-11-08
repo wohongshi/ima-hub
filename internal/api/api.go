@@ -14,6 +14,7 @@ import (
 
 	"imahub/internal/auth"
 	"imahub/internal/ima"
+	"imahub/internal/peer"
 	"imahub/internal/scan"
 	"imahub/internal/store"
 )
@@ -30,6 +31,12 @@ type Server struct {
 	// Mode "serve"（默认，全功能服务端）| "client"（客户端：直连 + 离线同步）
 	Mode string
 	Link *ClientLink // 客户端模式的服务端链路
+
+	// P2P（去中心化互联）：节点身份 / 发现表 / 局域网发现端口 / 离线投递队列
+	PeerIdentity *peer.Identity
+	PeerTable    *peer.Table
+	PeerLanPort  int
+	PeerOutbox   *peer.Outbox
 
 	rrCounters sync.Map // userID -> *int64，上传自动分配轮询计数
 }
@@ -834,6 +841,14 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		out["connected"] = connected
 		out["server"] = server
 		out["last_sync"] = lastSync
+	}
+	if s.PeerIdentity != nil {
+		out["p2p"] = map[string]any{
+			"id":        s.PeerIdentity.NodeID(),
+			"id_pretty": peer.FormatID(s.PeerIdentity.NodeID()),
+			"nickname":  s.PeerIdentity.Nickname,
+			"lan_port":  s.PeerLanPort,
+		}
 	}
 	writeOK(w, out)
 }

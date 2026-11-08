@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 
 	"imahub/internal/api"
 	"imahub/internal/mcp"
+	"imahub/internal/peer"
 	"imahub/internal/scan"
 	"imahub/internal/store"
 )
@@ -80,6 +82,37 @@ func main() {
 	if err := os.MkdirAll(srv.TmpDir, 0o755); err != nil {
 		log.Fatalf("创建临时目录失败: %v", err)
 	}
+
+	// —— P2P 节点身份与局域网发现（去中心化互联） ——
+	hostNick, _ := os.Hostname()
+	pid, err := peer.LoadOrCreate(*dataDir, hostNick)
+	if err != nil {
+		log.Fatalf("加载节点身份失败: %v", err)
+	}
+	ptable, err := peer.OpenTable(*dataDir)
+	if err != nil {
+		log.Fatalf("加载节点表失败: %v", err)
+	}
+	srv.PeerIdentity = pid
+	srv.PeerTable = ptable
+	srv.PeerLanPort = peer.LanPort()
+	// 宣告里的直连端口 = 本服务 HTTP 端口（对方经 /api/peer/rpc 找我们）
+	apiPort := 8090
+	if _, p, err := net.SplitHostPort(*addr); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			apiPort = n
+		}
+	}
+	pob, err := peer.OpenOutbox(*dataDir)
+	if err != nil {
+		log.Fatalf("加载离线投递队列失败: %v", err)
+	}
+	srv.PeerOutbox = pob
+	stopLan := make(chan struct{})
+	go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, stopLan) // 发现即补投
+	go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投：掉线消息自动重试
+	defer close(stopLan)
+	log.Printf("节点 ID: %s（%s）· 局域网发现 %d/udp · 直连 %d/tcp", peer.FormatID(pid.NodeID()), pid.Nickname, srv.PeerLanPort, apiPort)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())

@@ -14,6 +14,7 @@ const PAGE_TITLES = {
   home: '首页',
   files: '文件 / 知识库',
   notes: '笔记',
+  peers: '节点',
   settings: '设置',
   admin: '管理后台',
 };
@@ -384,6 +385,7 @@ function route() {
   if (routeName === 'home') renderHomeView(root);
   else if (routeName === 'files') renderFilesView(root);
   else if (routeName === 'notes') renderNotesView(root);
+  else if (routeName === 'peers') renderPeersView(root);
   else if (routeName === 'settings') renderSettingsView(root);
   else if (routeName === 'admin') renderAdminView(root);
 }

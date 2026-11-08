@@ -149,6 +149,8 @@ type data struct {
 	Tombstones map[string]int64 `json:"tombstones,omitempty"`
 	// UploadQueue 离线/失败上传队列（文件在 data/queue/）。
 	UploadQueue []UploadQueueItem `json:"upload_queue,omitempty"`
+	// AccessRequests P2P 访问申请制共享（按 ID 收敛）。
+	AccessRequests map[string]AccessRequest `json:"access_requests,omitempty"`
 }
 
 type Store struct {
@@ -165,6 +167,7 @@ func Open(dir string) (*Store, error) {
 	}
 	s := &Store{path: filepath.Join(dir, "data.json")}
 	s.d.Sessions = map[string]Session{}
+	s.d.AccessRequests = map[string]AccessRequest{}
 	s.d.NextID = 1
 	s.d.Settings = Settings{SiteName: "ImaHub", AllowRegister: false}
 	raw, err := os.ReadFile(s.path)
@@ -174,6 +177,9 @@ func Open(dir string) (*Store, error) {
 		}
 		if s.d.Sessions == nil {
 			s.d.Sessions = map[string]Session{}
+		}
+		if s.d.AccessRequests == nil {
+			s.d.AccessRequests = map[string]AccessRequest{}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
