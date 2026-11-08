@@ -119,6 +119,28 @@ func PostEnvelope(addr string, e Envelope) error {
 	return nil
 }
 
+// PostEnvelopeResp 投递信封并取回同步回程信封（知识库查询用，对方须在线；回包可达几十 MB）。
+func PostEnvelopeResp(addr string, e Envelope) ([]byte, error) {
+	body, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	cli := &http.Client{Timeout: 120 * time.Second}
+	resp, err := cli.Post("http://"+addr+"/api/peer/rpc", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("对方返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
+}
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

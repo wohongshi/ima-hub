@@ -207,6 +207,11 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 			Addr: host, TCPPort: e.Port, LastSeen: time.Now().Unix(),
 		})
 	}
+	// 知识库查询：同步加密回包应答（kb.list/search/browse/download）
+	if strings.HasPrefix(e.Kind, "kb.") {
+		s.handlePeerKBQuery(w, r, e, body)
+		return
+	}
 	now := time.Now().Unix()
 	switch e.Kind {
 	case "access.request":

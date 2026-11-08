@@ -52,6 +52,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/peers/{id}", s.requireAuth(s.handlePeersPatch))
 	mux.HandleFunc("DELETE /api/peers/{id}", s.requireAuth(s.handlePeersDelete))
 
+	// 知识库代理访问（经所有者节点查询/下载，按授权范围）
+	mux.HandleFunc("GET /api/peers/{id}/kbs", s.requireAuth(s.handlePeerKBList))
+	mux.HandleFunc("POST /api/peers/{id}/kb/search", s.requireAuth(s.handlePeerKBSearch))
+	mux.HandleFunc("POST /api/peers/{id}/kb/browse", s.requireAuth(s.handlePeerKBBrowse))
+	mux.HandleFunc("GET /api/peers/{id}/kb/download", s.requireAuth(s.handlePeerKBDownload))
+
 	// 访问申请制共享（请求/审批/撤销）
 	mux.HandleFunc("GET /api/access/requests", s.requireAuth(s.handleAccessList))
 	mux.HandleFunc("POST /api/access/requests", s.requireAuth(s.handleAccessCreate))

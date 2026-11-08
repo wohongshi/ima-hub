@@ -36,6 +36,7 @@ type Server struct {
 	PeerIdentity *peer.Identity
 	PeerTable    *peer.Table
 	PeerLanPort  int
+	PeerAPIPort  int // 本节点 HTTP 端口（RPC 回包信封 Port 字段）
 	PeerOutbox   *peer.Outbox
 
 	rrCounters sync.Map // userID -> *int64，上传自动分配轮询计数

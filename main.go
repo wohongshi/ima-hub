@@ -108,6 +108,7 @@ func main() {
 		log.Fatalf("加载离线投递队列失败: %v", err)
 	}
 	srv.PeerOutbox = pob
+	srv.PeerAPIPort = apiPort
 	stopLan := make(chan struct{})
 	go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, stopLan) // 发现即补投
 	go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投：掉线消息自动重试
