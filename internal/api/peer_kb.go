@@ -16,6 +16,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"imahub/internal/ima"
@@ -150,7 +151,7 @@ func (s *Server) handlePeerKBQuery(w http.ResponseWriter, r *http.Request, e pee
 	_ = json.NewEncoder(w).Encode(env)
 }
 
-// kbServeList 知识库列表（browse），跨账号聚合去重。
+// kbServeList 知识库列表（browse），跨账号并发聚合去重（单账号 15s 超时）。
 func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
 	if !g.has("browse") {
 		return map[string]any{"error": "未获 browse 授权"}
@@ -159,19 +160,37 @@ func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
 	if len(clients) == 0 {
 		return map[string]any{"error": "本节点未配置 ima 账号"}
 	}
+	outs := make([][]map[string]any, len(clients))
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		wg.Add(1)
+		go func(i int, c *ima.Client) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			rsp, err := c.SearchKnowledgeBase(cctx, "", "", 50)
+			if err != nil {
+				return
+			}
+			for _, it := range rsp.InfoList {
+				if !g.allow("browse", it.ID) {
+					continue
+				}
+				outs[i] = append(outs[i], map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
+			}
+		}(i, c)
+	}
+	wg.Wait()
 	seen := map[string]bool{}
 	kbs := []map[string]any{}
-	for _, c := range clients {
-		rsp, err := c.SearchKnowledgeBase(ctx, "", "", 50)
-		if err != nil {
-			continue
-		}
-		for _, it := range rsp.InfoList {
-			if seen[it.ID] || !g.allow("browse", it.ID) {
+	for _, items := range outs {
+		for _, kb := range items {
+			id, _ := kb["id"].(string)
+			if seen[id] {
 				continue
 			}
-			seen[it.ID] = true
-			kbs = append(kbs, map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
+			seen[id] = true
+			kbs = append(kbs, kb)
 		}
 	}
 	return map[string]any{"kbs": kbs}
@@ -211,17 +230,35 @@ func (s *Server) kbServeSearch(ctx context.Context, g kbGrant, kb, query, cursor
 	}
 	seen := map[string]bool{}
 	kbs := []map[string]any{}
-	for _, c := range clients {
-		rsp, err := c.SearchKnowledgeBase(ctx, query, cursor, limit)
-		if err != nil {
-			continue
-		}
-		for _, it := range rsp.InfoList {
-			if seen[it.ID] || !g.allow("search", it.ID) {
+	outs := make([][]map[string]any, len(clients))
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		wg.Add(1)
+		go func(i int, c *ima.Client) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			rsp, err := c.SearchKnowledgeBase(cctx, query, cursor, limit)
+			if err != nil {
+				return
+			}
+			for _, it := range rsp.InfoList {
+				if !g.allow("search", it.ID) {
+					continue
+				}
+				outs[i] = append(outs[i], map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
+			}
+		}(i, c)
+	}
+	wg.Wait()
+	for _, items := range outs {
+		for _, kb := range items {
+			id, _ := kb["id"].(string)
+			if seen[id] {
 				continue
 			}
-			seen[it.ID] = true
-			kbs = append(kbs, map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
+			seen[id] = true
+			kbs = append(kbs, kb)
 		}
 	}
 	return map[string]any{"kbs": kbs, "is_end": true, "next_cursor": ""}

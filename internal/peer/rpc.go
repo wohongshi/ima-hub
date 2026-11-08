@@ -100,13 +100,20 @@ func PeerAddr(p Peer) string {
 	return ""
 }
 
+// 共享 HTTP 客户端：连接复用（节点间高频 RPC 不再每次新建连接）。
+var rpcTransport = &http.Transport{
+	MaxIdleConns:        32,
+	MaxIdleConnsPerHost: 8,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // PostEnvelope 投递信封到对方 /api/peer/rpc。
 func PostEnvelope(addr string, e Envelope) error {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	cli := &http.Client{Timeout: 8 * time.Second}
+	cli := &http.Client{Timeout: 8 * time.Second, Transport: rpcTransport}
 	resp, err := cli.Post("http://"+addr+"/api/peer/rpc", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -125,7 +132,7 @@ func PostEnvelopeResp(addr string, e Envelope) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cli := &http.Client{Timeout: 120 * time.Second}
+	cli := &http.Client{Timeout: 120 * time.Second, Transport: rpcTransport}
 	resp, err := cli.Post("http://"+addr+"/api/peer/rpc", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
