@@ -171,6 +171,7 @@ func (s *Server) handleAccessDecide(w http.ResponseWriter, r *http.Request, u *s
 	var req struct {
 		Action    string   `json:"action"`
 		Scopes    []string `json:"scopes"`
+		Kbs       []string `json:"kbs"`
 		ExpiresAt int64    `json:"expires_at"`
 	}
 	if !decodeBody(w, r, &req) {
@@ -204,6 +205,9 @@ func (s *Server) handleAccessDecide(w http.ResponseWriter, r *http.Request, u *s
 		if req.ExpiresAt > 0 && req.ExpiresAt <= now {
 			writeBizErr(w, "有效期必须在未来")
 			return
+		}
+		if req.Kbs != nil {
+			ar.KBs = validKBs(req.Kbs) // 审批方可设/收窄知识库白名单（空数组=全库）
 		}
 		ar.Status, ar.Scopes, ar.UpdatedAt, ar.ExpiresAt = "approved", scopes, now, req.ExpiresAt
 	case "deny":

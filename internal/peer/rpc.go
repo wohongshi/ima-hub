@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -100,12 +101,15 @@ func PeerAddr(p Peer) string {
 	return ""
 }
 
-// 共享 HTTP 客户端：连接复用（节点间高频 RPC 不再每次新建连接）。
-var rpcTransport = &http.Transport{
-	MaxIdleConns:        32,
-	MaxIdleConnsPerHost: 8,
-	IdleConnTimeout:     90 * time.Second,
-}
+// 共享 HTTP 客户端：连接复用（节点间高频 RPC 不再每次新建连接）；
+// 基于 DefaultTransport 克隆，保留代理环境（HTTP_PROXY 等）与默认拨号/HTTP2 行为。
+var rpcTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 32
+	t.MaxIdleConnsPerHost = 8
+	t.IdleConnTimeout = 90 * time.Second
+	return t
+}()
 
 // PostEnvelope 投递信封到对方 /api/peer/rpc。
 func PostEnvelope(addr string, e Envelope) error {
@@ -127,23 +131,36 @@ func PostEnvelope(addr string, e Envelope) error {
 }
 
 // PostEnvelopeResp 投递信封并取回同步回程信封（知识库查询用，对方须在线；回包可达几十 MB）。
-func PostEnvelopeResp(addr string, e Envelope) ([]byte, error) {
+// ctx 可随 HTTP 请求取消；回包超 64MB 显式报错（不静默截断）。
+func PostEnvelopeResp(ctx context.Context, addr string, e Envelope) ([]byte, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return nil, err
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/peer/rpc", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	cli := &http.Client{Timeout: 120 * time.Second, Transport: rpcTransport}
-	resp, err := cli.Post("http://"+addr+"/api/peer/rpc", "application/json", bytes.NewReader(body))
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20+1))
 	if err != nil {
 		return nil, err
 	}
+	if len(raw) > 64<<20 {
+		return nil, errors.New("回包过大（>64MB），已中止")
+	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("对方返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		msg := raw
+		if len(msg) > 4096 {
+			msg = msg[:4096] // 错误回显不放大（对方可回大 body 撑内存）
+		}
+		return nil, fmt.Errorf("对方返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return raw, nil
 }

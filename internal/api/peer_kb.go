@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -151,16 +152,17 @@ func (s *Server) handlePeerKBQuery(w http.ResponseWriter, r *http.Request, e pee
 	_ = json.NewEncoder(w).Encode(env)
 }
 
-// kbServeList 知识库列表（browse），跨账号并发聚合去重（单账号 15s 超时）。
-func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
-	if !g.has("browse") {
-		return map[string]any{"error": "未获 browse 授权"}
-	}
+// kbAggKBs 跨账号并发聚合知识库条目（单账号 15s 超时；全部失败报错，不冒充空结果）。
+// 单账号时透传上游分页游标；多账号聚合游标暂不支持（is_end 恒 true）。
+func (s *Server) kbAggKBs(ctx context.Context, g kbGrant, scope, query, cursor string, limit uint64) ([]map[string]any, bool, string, error) {
 	clients := s.peerKBImaClients()
 	if len(clients) == 0 {
-		return map[string]any{"error": "本节点未配置 ima 账号"}
+		return nil, true, "", errors.New("本节点未配置 ima 账号")
 	}
 	outs := make([][]map[string]any, len(clients))
+	errs := make([]error, len(clients))
+	ends := make([]bool, len(clients))
+	curs := make([]string, len(clients))
 	var wg sync.WaitGroup
 	for i, c := range clients {
 		wg.Add(1)
@@ -168,12 +170,14 @@ func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			rsp, err := c.SearchKnowledgeBase(cctx, "", "", 50)
-			if err != nil {
+			rsp, e := c.SearchKnowledgeBase(cctx, query, cursor, limit)
+			if e != nil {
+				errs[i] = e
 				return
 			}
+			ends[i], curs[i] = rsp.IsEnd, rsp.NextCursor
 			for _, it := range rsp.InfoList {
-				if !g.allow("browse", it.ID) {
+				if !g.allow(scope, it.ID) {
 					continue
 				}
 				outs[i] = append(outs[i], map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
@@ -181,6 +185,16 @@ func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
 		}(i, c)
 	}
 	wg.Wait()
+	fails := 0
+	for _, e := range errs {
+		if e != nil {
+			log.Printf("peer kb 聚合: 账号查询失败: %v", e)
+			fails++
+		}
+	}
+	if fails == len(clients) {
+		return nil, true, "", errors.New("对方 ima 账号查询失败（key 失效或上游故障）")
+	}
 	seen := map[string]bool{}
 	kbs := []map[string]any{}
 	for _, items := range outs {
@@ -193,7 +207,23 @@ func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
 			kbs = append(kbs, kb)
 		}
 	}
-	return map[string]any{"kbs": kbs}
+	isEnd, next := true, ""
+	if len(clients) == 1 {
+		isEnd, next = ends[0], curs[0]
+	}
+	return kbs, isEnd, next, nil
+}
+
+// kbServeList 知识库列表（browse），跨账号并发聚合去重。
+func (s *Server) kbServeList(ctx context.Context, g kbGrant) map[string]any {
+	if !g.has("browse") {
+		return map[string]any{"error": "未获 browse 授权"}
+	}
+	kbs, isEnd, next, err := s.kbAggKBs(ctx, g, "browse", "", "", 50)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return map[string]any{"kbs": kbs, "is_end": isEnd, "next_cursor": next}
 }
 
 // kbServeSearch 检索（search）：指定库→库内检索；未指定→跨库检索（结果按授权过滤）。
@@ -228,40 +258,11 @@ func (s *Server) kbServeSearch(ctx context.Context, g kbGrant, kb, query, cursor
 		}
 		return map[string]any{"error": "检索失败（账号均未命中该知识库）"}
 	}
-	seen := map[string]bool{}
-	kbs := []map[string]any{}
-	outs := make([][]map[string]any, len(clients))
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		go func(i int, c *ima.Client) {
-			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			rsp, err := c.SearchKnowledgeBase(cctx, query, cursor, limit)
-			if err != nil {
-				return
-			}
-			for _, it := range rsp.InfoList {
-				if !g.allow("search", it.ID) {
-					continue
-				}
-				outs[i] = append(outs[i], map[string]any{"id": it.ID, "name": it.Name, "cover_url": it.CoverURL})
-			}
-		}(i, c)
+	kbs, isEnd, next, err := s.kbAggKBs(ctx, g, "search", query, cursor, limit)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
 	}
-	wg.Wait()
-	for _, items := range outs {
-		for _, kb := range items {
-			id, _ := kb["id"].(string)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			kbs = append(kbs, kb)
-		}
-	}
-	return map[string]any{"kbs": kbs, "is_end": true, "next_cursor": ""}
+	return map[string]any{"kbs": kbs, "is_end": isEnd, "next_cursor": next}
 }
 
 // kbServeBrowse 浏览文件列表（browse）。
@@ -291,7 +292,60 @@ func (s *Server) kbServeBrowse(ctx context.Context, g kbGrant, kb, folder, curso
 	return map[string]any{"error": "浏览失败（账号均未命中该知识库）"}
 }
 
-// kbServeDownload 下载文件内容（download，上限 kbDownloadCap）。
+// kbDownloadSem 下载并发闸：大文件封载后内存约 3 倍，防并发放大把节点推入 OOM。
+var kbDownloadSem = make(chan struct{}, 2)
+
+// kbWalkFind 在知识库目录树内查找 media_id（BFS，页/目录/条目全上限；超限视为未找到，
+// 宁拒绝不越权——白名单必须先证明 media 归属授权知识库）。
+func kbWalkFind(ctx context.Context, c *ima.Client, kb, mediaID string) bool {
+	queue := []string{""}
+	visited := map[string]bool{}
+	total := 0
+	for len(queue) > 0 && len(visited) <= 64 {
+		folder := queue[0]
+		queue = queue[1:]
+		if visited[folder] {
+			continue
+		}
+		visited[folder] = true
+		cursor := ""
+		for page := 0; page < 20; page++ {
+			rsp, err := c.GetKnowledgeList(ctx, kb, folder, cursor, 200)
+			if err != nil {
+				break
+			}
+			total += len(rsp.Files) + len(rsp.Folders)
+			if total > 5000 {
+				return false
+			}
+			for _, f := range rsp.Files {
+				if f.MediaID == mediaID {
+					return true
+				}
+			}
+			for _, fo := range rsp.Folders {
+				queue = append(queue, fo.FolderID)
+			}
+			if rsp.IsEnd {
+				break
+			}
+			cursor = rsp.NextCursor
+		}
+	}
+	return false
+}
+
+// mediaInKB 校验 media 确实属于授权知识库（防 kb 白名单被他人 media_id 绕过）。
+func (s *Server) mediaInKB(ctx context.Context, kb, mediaID string) bool {
+	for _, c := range s.peerKBImaClients() {
+		if kbWalkFind(ctx, c, kb, mediaID) {
+			return true
+		}
+	}
+	return false
+}
+
+// kbServeDownload 下载文件内容（download，上限 kbDownloadCap；先证 media 归属再取）。
 func (s *Server) kbServeDownload(ctx context.Context, g kbGrant, kb, mediaID, name string) map[string]any {
 	if !g.has("download") {
 		return map[string]any{"error": "未获 download 授权"}
@@ -301,6 +355,15 @@ func (s *Server) kbServeDownload(ctx context.Context, g kbGrant, kb, mediaID, na
 	}
 	if !g.allow("download", kb) {
 		return map[string]any{"error": "未授权该知识库"}
+	}
+	select {
+	case kbDownloadSem <- struct{}{}:
+		defer func() { <-kbDownloadSem }()
+	default:
+		return map[string]any{"error": "对方正在下载中，请稍后重试"}
+	}
+	if !s.mediaInKB(ctx, kb, mediaID) {
+		return map[string]any{"error": "文件不在授权知识库内"}
 	}
 	for _, c := range s.peerKBImaClients() {
 		info, err := c.GetMediaInfo(ctx, mediaID)
@@ -329,8 +392,8 @@ func (s *Server) kbServeDownload(ctx context.Context, g kbGrant, kb, mediaID, na
 
 // ---------- 客户端半：经所有者节点查询（同步） ----------
 
-// peerKBQuery 向对方节点发起知识库查询，验证并解密回包。
-func (s *Server) peerKBQuery(peerID, kind string, args map[string]any) (map[string]any, error) {
+// peerKBQuery 向对方节点发起知识库查询，验证并解密回包（ctx 可随请求取消）。
+func (s *Server) peerKBQuery(ctx context.Context, peerID, kind string, args map[string]any) (map[string]any, error) {
 	if s.PeerIdentity == nil || s.PeerTable == nil {
 		return nil, errors.New("P2P 未启用")
 	}
@@ -349,7 +412,7 @@ func (s *Server) peerKBQuery(peerID, kind string, args map[string]any) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	raw, err := peer.PostEnvelopeResp(addr, env)
+	raw, err := peer.PostEnvelopeResp(ctx, addr, env)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +452,7 @@ func (s *Server) writePeerKB(w http.ResponseWriter, out map[string]any, err erro
 
 // handlePeerKBList 对方知识库列表。
 func (s *Server) handlePeerKBList(w http.ResponseWriter, r *http.Request, u *store.User) {
-	out, err := s.peerKBQuery(r.PathValue("id"), "kb.list", map[string]any{
+	out, err := s.peerKBQuery(r.Context(), r.PathValue("id"), "kb.list", map[string]any{
 		"cursor": r.URL.Query().Get("cursor"), "limit": 50,
 	})
 	s.writePeerKB(w, out, err)
@@ -410,7 +473,7 @@ func (s *Server) handlePeerKBSearch(w http.ResponseWriter, r *http.Request, u *s
 		writeBizErr(w, "缺检索词")
 		return
 	}
-	out, err := s.peerKBQuery(r.PathValue("id"), "kb.search", map[string]any{
+	out, err := s.peerKBQuery(r.Context(), r.PathValue("id"), "kb.search", map[string]any{
 		"query": req.Q, "kb": req.KB, "cursor": req.Cursor, "limit": req.Limit,
 	})
 	s.writePeerKB(w, out, err)
@@ -431,7 +494,7 @@ func (s *Server) handlePeerKBBrowse(w http.ResponseWriter, r *http.Request, u *s
 		writeBizErr(w, "缺 kb")
 		return
 	}
-	out, err := s.peerKBQuery(r.PathValue("id"), "kb.browse", map[string]any{
+	out, err := s.peerKBQuery(r.Context(), r.PathValue("id"), "kb.browse", map[string]any{
 		"kb_id": req.KB, "folder_id": req.Folder, "cursor": req.Cursor, "limit": req.Limit,
 	})
 	s.writePeerKB(w, out, err)
@@ -440,7 +503,7 @@ func (s *Server) handlePeerKBBrowse(w http.ResponseWriter, r *http.Request, u *s
 // handlePeerKBDownload 代理下载对方知识库文件（流式回浏览器）。
 func (s *Server) handlePeerKBDownload(w http.ResponseWriter, r *http.Request, u *store.User) {
 	q := r.URL.Query()
-	out, err := s.peerKBQuery(r.PathValue("id"), "kb.download", map[string]any{
+	out, err := s.peerKBQuery(r.Context(), r.PathValue("id"), "kb.download", map[string]any{
 		"kb_id": q.Get("kb"), "media_id": q.Get("media"), "name": q.Get("name"),
 	})
 	if err != nil {
@@ -451,7 +514,11 @@ func (s *Server) handlePeerKBDownload(w http.ResponseWriter, r *http.Request, u 
 		writeBizErr(w, msg)
 		return
 	}
-	b64, _ := out["content_b64"].(string)
+	b64, ok := out["content_b64"].(string)
+	if !ok || b64 == "" {
+		writeBizErr(w, "回包缺少文件内容")
+		return
+	}
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		writeBizErr(w, "回包内容非法")

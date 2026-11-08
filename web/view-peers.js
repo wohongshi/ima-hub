@@ -325,7 +325,7 @@ function accRowHtml(r, dir) {
   return '<div class="acc-row" data-id="' + escapeHtml(String(r.id)) + '">' +
     '<div class="acc-main">' +
     '<div class="acc-name"><span class="nm">' + escapeHtml(r.peer_nick || r.peer_id || '未知节点') + '</span>' +
-    '<span class="badge ' + st.cls + '">' + st.label + '</span></div>' +
+    '<span class="badge ' + escapeHtml(st.cls) + '">' + escapeHtml(st.label) + '</span></div>' +
     '<div class="acc-meta">' + (scopes || '<span class="muted">无范围</span>') +
     (r.note ? '<span class="acc-note" title="' + escapeHtml(r.note) + '">' + escapeHtml(r.note) + '</span>' : '') +
     '<span title="' + escapeHtml(formatTime(r.updated_at || r.created_at)) + '">' +
@@ -345,13 +345,16 @@ function bindAccRows(box, root, dir, list) {
     if (approve) approve.addEventListener('click', function () { openAccessApproveModal(root, r); });
     const deny = $('[data-act="deny"]', row);
     if (deny) deny.addEventListener('click', function () {
-      decideAccess(root, r, 'deny', { msg: '确定拒绝该申请吗？', title: '拒绝申请', okText: '拒绝', toastText: '已拒绝' });
+      decideAccess(root, r, 'deny', { msg: '确定拒绝该申请吗？', title: '拒绝申请', okText: '拒绝', danger: true, toastText: '已拒绝' });
     });
     const revoke = $('[data-act="revoke"]', row);
     if (revoke) revoke.addEventListener('click', function () {
       const withdraw = dir === 'sent' && r.status === 'pending';
+      let msg = '确定撤销已授予的访问吗？';
+      if (withdraw) msg = '确定撤回该申请吗？';
+      else if (dir === 'sent') msg = '确定放弃已获批准的访问吗？';
       decideAccess(root, r, 'revoke', {
-        msg: withdraw ? '确定撤回该申请吗？' : (dir === 'sent' ? '确定放弃已获批准的访问吗？' : '确定撤销已授予的访问吗？'),
+        msg: msg,
         title: withdraw ? '撤回申请' : '撤销授权',
         okText: '确认',
         danger: true,
@@ -374,6 +377,7 @@ async function decideAccess(root, r, action, opts) {
     await apiPost('/api/access/requests/' + encodeURIComponent(r.id) + '/decide', { action: action });
     toast(opts.toastText || '已完成', 'success');
     loadAccessCard(root);
+    loadPeersView(root); // 授权变更同步刷新节点行「已授予范围」
   } catch (e) { /* api 层已提示 */ }
 }
 
@@ -394,13 +398,16 @@ function openAccessApproveModal(root, r) {
   showModal({
     title: '批准访问申请',
     body:
-      '<div class="hint" style="margin:0 0 12px">' +
+      '<div class="hint acc-hint">' +
       escapeHtml(r.peer_nick || r.peer_id || '') + ' 申请的访问范围</div>' +
       '<div class="field"><label>授予范围</label><div class="acc-scopes">' +
       ['search', 'browse', 'download'].map(function (s) {
         return scopeCheckboxHtml(s, (r.scopes || []).indexOf(s) >= 0);
       }).join('') +
       '</div></div>' +
+      '<div class="field"><label>知识库白名单（留空=全部）</label>' +
+      '<input class="input" id="ac-kbs" placeholder="kb1,kb2（逗号分隔）" value="' +
+      escapeHtml((r.kbs || []).join(',')) + '"></div>' +
       '<div class="field"><label>有效期</label><select class="select" id="ac-exp">' +
       '<option value="0">永久</option><option value="7">7 天</option><option value="30">30 天</option>' +
       '<option value="90">90 天</option><option value="180">180 天</option></select></div>',
@@ -411,6 +418,8 @@ function openAccessApproveModal(root, r) {
         if (!scopes.length) { toast('至少勾选一个范围', 'warn'); return; }
         const days = Number($('#ac-exp', m).value) || 0;
         const body = { action: 'approve', scopes: scopes };
+        const kbsRaw = $('#ac-kbs', m).value.trim();
+        body.kbs = kbsRaw ? kbsRaw.split(/[,，\s]+/).filter(Boolean) : [];
         if (days > 0) body.expires_at = Math.floor(Date.now() / 1000) + days * 86400;
         const btn = $('#ac-ok', m);
         btn.disabled = true;

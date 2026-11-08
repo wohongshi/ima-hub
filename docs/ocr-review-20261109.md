@@ -1,6 +1,6 @@
 # ocr 评审处置表 — P2P 轮（2026-11-09）
 
-范围：d3dcc95 / 4f6240d / 0dfeaad / f5cc82f 逐提交 diff 评审。本文档为第 1 轮处置记录（后续轮次先读本表，已结案条目不重议）。
+范围：d3dcc95 / 4f6240d / 0dfeaad / f5cc82f 逐提交 diff 评审。第 1 轮（d3dcc95 40 条）与第 2 轮（4f6240d 29 条 + 0dfeaad 2 条 + f5cc82f 3 条）处置如下。后续轮次先读本表，已结案条目不重议。
 
 ## 已修（按评审编号对应 ocr_d3dcc95.txt 条目顺序）
 
@@ -49,3 +49,36 @@
 - go vet/build/test 全过（peer/api/store 单测含新增 grantedToMe/kbGrant 逻辑）
 - probe_peer 14/14、probe_kb 17/17（含拒绝路径）、probe_queue 15/15、probe_fixes 10/10、probe_client 13/13、smoke 23 项 0 错
 - 总计 69 探针断言全绿
+
+---
+
+# 第 2 轮（4f6240d 29 条 + 0dfeaad 2 条 + f5cc82f 3 条）
+
+## 已修
+
+| 来源 | 严重度 | 问题 | 修法 |
+|------|--------|------|------|
+| 4f62 | high | **download 白名单可绕过**：media 只按 ID 全账号取，不验归属 kb（kb1 授权可下 kb2 的文件） | mediaInKB：BFS 遍历授权 kb 目录树先证归属再取（页/目录/条目上限，超限拒绝） |
+| 4f62 | high | probe 白名单测试不可观测（mock 只有 kb1） | mock 加 kb2「未授权库」，probe 断言 kb2 被滤掉；补跨库 media 绑定绕过用例 |
+| 4f62/0dfe | med | 内存放大（32MB→~60MB×并发）/ margin 折叠失效 / checkbox 死 CSS | 下载并发闸（2）+ 修正 field 间距写法 + 删死声明 |
+| 4f62 | med | 跨库检索 is_end 硬编码 true（被滤库永不翻页）；全账号失败冒充空成功 | kbAggKBs 统一聚合：单账号透传游标、失败计数、全失败报错（兼 f5cc 同条） |
+| 4f62 | med | PostEnvelopeResp 无 ctx（断连后继续拉 32MB）；回包截断静默；错误回显无上限 | ctx 透传（NewRequestWithContext）+ 超限显式报错 + 错误回显截 4KB |
+| 4f62 | med | content_b64 缺失→空文件 200 假成功 | 判空显式报错 |
+| 4f62 | med | KBs 请求方全控，审批方看不见也收窄不了 | decide 接受 kbs（可设/收窄白名单）+ 批准弹窗白名单输入框（预填申请值） |
+| 4f62 | med | probe：空断言（xpub 恒真）/req_and_approve 不验送达审批/负向断言 grep 俚/不 trap INT/陈旧 dl.bin 假绿/并集无回归检查 | 全部重写：JSON 断言 biz_err、送达+审批失败即中止、trap INT TERM、dl.bin 前置清理+curl -f、并集断言；mock 入库 scripts/mock2.py + MOCK 覆盖 + 缺失守卫 |
+| 4f62 | low | 状态徽章未转义/嵌套三元/行内 style/deny 非 danger/授权后节点行不刷新 | 逐条修（转义、if/else、acc-hint 类、danger、双刷新） |
+| 4f62 | low | .card-head 移动端逐字换行 | .peers-page .card-head flex-wrap |
+| 0dfe | low | 勾选框 border-radius 死 CSS；.modal .field+.field margin 叠加 | 删除/改写 |
+| f5cc | low | rpcTransport 裸建丢代理环境（HTTP_PROXY 失效） | DefaultTransport.Clone 保留代理/拨号/HTTP2 默认 |
+| f5cc | low | 15s 超时吞错无日志 | log.Printf 记录失败账号（并入聚合修复） |
+
+## 误报 / 不改
+
+- scopeBadgesHtml 抽取（4f62 maintainability）：两处重复可接受，改动面大于收益——不改。
+- access 列表双请求合并单请求（4f62 perf low）：双请求本就并行，收益微——不改。
+- probe wait 非子进程问题（4f62 med）：start_node 已 fail-fast + kill 兜底，wait 仅优雅等待——维持现状。
+
+## 第 2 轮验证
+
+- probe_kb 重写后 **22/22**（白名单滤 kb2/跨库 media 绑定拒/敌意文件名净化/未知 media 干净报错/并集回归/拒绝路径）
+- 全量：probe_kb 22 + probe_peer 14 + queue 15 + fixes 10 + client 13 = **74 断言** + smoke 0 报错
