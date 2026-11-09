@@ -198,7 +198,8 @@ function renderAuthForm() {
     pw2Input.required = true;
     $('#auth-password').setAttribute('autocomplete', 'new-password');
   } else {
-    tabs.classList.remove('hidden');
+    // 注册关闭时只剩「登录」一个 tab——整个切换条一并隐藏，别留孤零零一颗按钮
+    tabs.classList.toggle('hidden', !allowRegister);
     $$('#auth-tabs button').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-tab') === mode);
     });

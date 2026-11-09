@@ -710,12 +710,18 @@ async function openGroupFeedModal(g) {
   const tasks = (feed && feed.tasks) || [];
   const events = (feed && feed.events) || [];
   const members = (feed && feed.group && feed.group.members) || g.members || [];
+  /* 署名显示：自己显示「我」，与成员行叫法一致 */
+  const byName = function (x) {
+    const me = (state.user && state.user.username) || '';
+    if (!x) return '未知';
+    return x === me ? '我' : x;
+  };
   const taskRow = function (t) {
     return '<div class="acc-row"><div class="acc-main">' +
       '<div class="acc-name"><span class="nm">' + escapeHtml(t.title || '(无标题)') + '</span>' +
       '<span class="badge ' + taskStatusClass(t.status) + '">' + taskStatusLabel(t.status) + '</span></div>' +
       '<div class="acc-meta">' +
-      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(t.by || '未知') + '</span>' +
+      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(byName(t.by)) + '</span>' +
       (t.due ? '<span class="muted">截止 ' + escapeHtml(formatDue(t.due)) + '</span>' : '') +
       '<span class="muted">' + escapeHtml(relativeTime(t.created_at) || '—') + '</span>' +
       '</div></div></div>';
@@ -723,9 +729,9 @@ async function openGroupFeedModal(g) {
   const feedEvRow = function (ev) {
     return '<div class="acc-row"><div class="acc-main">' +
       '<div class="acc-name"><span class="nm">' + escapeHtml(ev.title || '(无标题)') + '</span>' +
-      '<span class="badge ' + (daysUntilText(ev) === '今天' ? 'warn' : 'muted') + '">' + escapeHtml(fmtEventTime(ev)) + '</span></div>' +
+      '<span class="muted">' + escapeHtml(fmtEventTime(ev)) + '</span></div>' +
       '<div class="acc-meta">' +
-      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(ev.by || '未知') + '</span>' +
+      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(byName(ev.by)) + '</span>' +
       (ev.location ? '<span class="muted">' + escapeHtml(ev.location) + '</span>' : '') +
       '<span class="muted">' + escapeHtml(daysUntilText(ev)) + '</span>' +
       '</div></div></div>';

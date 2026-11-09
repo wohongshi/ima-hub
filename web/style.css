@@ -610,7 +610,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 
 /* ============ 首页仪表盘 ============ */
 /* .home-page 唯一生效定义在「首页升级」段（display:block），此处不重复声明 */
-.home-panel { min-width: 0; }
+.home-panel { min-width: 0; display: flex; flex-direction: column; }
+.home-panel > .empty { flex: 1; padding: 24px; }
 .home-sub-title { font-size: 12.5px; font-weight: 700; color: var(--text-2); margin: 18px 2px 8px; }
 
 .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
@@ -799,7 +800,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .hero-btn:hover { background: rgba(255,255,255,.3) !important; transform: translateY(-1px); }
 .hero-btn:active { transform: translateY(0); }
 
-.home-grid { display: grid; grid-template-columns: 1.12fr 1fr; gap: 18px; align-items: start; }
+.home-grid { display: grid; grid-template-columns: 1.12fr 1fr; gap: 18px; align-items: stretch; }
 @media (max-width: 1020px) {
   .home-grid { grid-template-columns: 1fr; }
   .hero-main { flex-direction: column; align-items: flex-start; }
