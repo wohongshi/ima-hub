@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/MCP-15%20tools-8b5cf6" alt="MCP 15 tools">
   <img src="https://img.shields.io/badge/probes-74%20assertions-brightgreen" alt="74 assertions">
   <img src="https://img.shields.io/badge/deps-pure%20Go%20zero%20SDK-555" alt="pure Go zero SDK">
-  <img src="https://img.shields.io/badge/release-v0.4.1-blueviolet" alt="v0.4.1">
+  <img src="https://img.shields.io/badge/release-v0.5.0-blueviolet" alt="v0.5.0">
   <img src="https://img.shields.io/badge/desktop-Windows%20GUI-2ea44f" alt="Windows desktop">
 </p>
 
@@ -45,7 +45,7 @@
 
 ## 亮点
 
-- 🖥️ **Windows 桌面版**：双击即用的原生窗口软件（WebView2），内嵌同款引擎——开着窗口就是一个全功能节点
+- 🖥️ **Windows 桌面版**：双击即用的原生窗口软件，**界面引擎完全自写**（软渲染直绘，零 WebView2/浏览器内核依赖）——开着窗口就是一个全功能节点
 - 🌐 **P2P 节点网络**：人人都是客户端、人人都是服务端——局域网自动发现 + 邀请码互联，无需中心服务器
 - 🤝 **申请制共享**：向对方申请 search / browse / download 三档访问，可限知识库、可设有效期，批准可撤销；**你的 ima key 永不出你的机器**
 - 📨 **掉线容错**：给掉线的节点发消息照样成功，指数退避重试，对方一上线立即补投（探针实测）
@@ -87,6 +87,7 @@ internal/auth/          PBKDF2 口令哈希
 internal/ima/           自写 ima 引擎（wiki/note 接口、COS 签名上传、压缩包解压）
 internal/ask/           RAG 问答（跨账号检索 + OpenAI 兼容合成）
 internal/peer/          P2P：Ed25519+X25519 身份、组播发现、邀请码、加密 RPC、离线补投
+internal/ui/            自写界面引擎（2x 抗锯齿软渲染、矢量/文字/控件，零 WebView2）
 internal/api/           REST 80 路由（同步、上传队列、节点、访问申请、知识库代理）
 internal/scan/          知识库后台扫描（统计快照，账号级并发）
 internal/mcp/           MCP 服务（JSON-RPC / Streamable HTTP）
@@ -139,12 +140,12 @@ flowchart LR
 
 | 平台 | 产物 |
 | --- | --- |
-| **Windows x64（桌面版·推荐）** | `imahub-desktop_0.4.1_windows-x86_64.exe` —— 双击即用，原生窗口 |
-| Windows x64（命令行） | `imahub_0.4.1_windows-x86_64.exe` |
-| Linux x64 | `imahub_0.4.1_linux-x86_64` |
-| Linux ARM64（树莓派 / 开发板） | `imahub_0.4.1_linux-arm64` |
+| **Windows x64（桌面版·推荐）** | `imahub-desktop_0.5.0_windows-x86_64.exe` —— 双击即用，自写界面引擎 |
+| Windows x64（命令行） | `imahub_0.5.0_windows-x86_64.exe` |
+| Linux x64 | `imahub_0.5.0_linux-x86_64` |
+| Linux ARM64（树莓派 / 开发板） | `imahub_0.5.0_linux-arm64` |
 
-> **桌面版**：Win11 自带 WebView2 直接跑；Win10 若提示缺运行时，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（微软官方免费）。数据默认存 `%APPDATA%\ImaHub`，备份该目录=备份全部。
+> **桌面版**：界面由自写渲染引擎直绘（2x 抗锯齿、矢量图标、系统字体），**不依赖 WebView2/浏览器内核**，双击即跑。数据默认存 `%APPDATA%\ImaHub`，备份该目录=备份全部。
 
 **2. 起节点**（每台机器各起一个，就是互联的两端）：
 
@@ -264,6 +265,7 @@ flowchart LR
 | 静态资源 | ETag + 304（must-revalidate） | 重复访问零传输，发版即生效 |
 | 知识库扫描 / 问答检索 / 聚合浏览 | 逐账号并发 + 单账号超时隔离 | 多账号不互相拖，单账号挂不全局 |
 | 节点 RPC | 连接复用（keep-alive 池）+ 代理环境保留 | 高频查询不再每次建连 |
+| 桌面渲染 | 凸形解析二分边界 + 2x 抗锯齿软渲染 | 全帧亚秒级，形状填充较通用栅格化器快约 20 倍 |
 | 知识库代理 | 跨账号并发聚合 + 下载并发闸（2） | 大文件并发放大不打爆内存 |
 | 服务端↔客户端同步 | since 增量 + 活动流水游标 | 只传变更项，多客户端省流量 |
 

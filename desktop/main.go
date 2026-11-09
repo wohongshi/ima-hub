@@ -18,6 +18,7 @@ func versionString() string { return "v" + api.Version }
 func main() {
 	version := flag.Bool("version", false, "打印版本号")
 	selftest := flag.Bool("selftest", false, "自检：起引擎 + HTTP 断言后退出（无窗口）")
+	preview := flag.String("preview", "", "预览验收：逐屏渲染 PNG 到目录后退出")
 	serveOnly := flag.Bool("serve-only", false, "不开窗口，仅后台服务")
 	addr := flag.String("addr", ":8090", "监听地址（被占自动顺延）")
 	dataDir := flag.String("data", "", "数据目录（默认 系统配置目录/ImaHub）")
@@ -43,6 +44,10 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("SELFTEST PASS", eng.url)
+		return
+	}
+	if *preview != "" {
+		runPreview(eng, *preview)
 		return
 	}
 	log.Printf("ImaHub Desktop %s · %s  (数据目录 %s)", versionString(), eng.url, *dataDir)
