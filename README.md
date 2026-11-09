@@ -12,7 +12,8 @@
   <img src="https://img.shields.io/badge/MCP-15%20tools-8b5cf6" alt="MCP 15 tools">
   <img src="https://img.shields.io/badge/probes-74%20assertions-brightgreen" alt="74 assertions">
   <img src="https://img.shields.io/badge/deps-pure%20Go%20zero%20SDK-555" alt="pure Go zero SDK">
-  <img src="https://img.shields.io/badge/release-v0.4.0-blueviolet" alt="v0.4.0">
+  <img src="https://img.shields.io/badge/release-v0.4.1-blueviolet" alt="v0.4.1">
+  <img src="https://img.shields.io/badge/desktop-Windows%20GUI-2ea44f" alt="Windows desktop">
 </p>
 
 ---
@@ -44,6 +45,7 @@
 
 ## 亮点
 
+- 🖥️ **Windows 桌面版**：双击即用的原生窗口软件（WebView2），内嵌同款引擎——开着窗口就是一个全功能节点
 - 🌐 **P2P 节点网络**：人人都是客户端、人人都是服务端——局域网自动发现 + 邀请码互联，无需中心服务器
 - 🤝 **申请制共享**：向对方申请 search / browse / download 三档访问，可限知识库、可设有效期，批准可撤销；**你的 ima key 永不出你的机器**
 - 📨 **掉线容错**：给掉线的节点发消息照样成功，指数退避重试，对方一上线立即补投（探针实测）
@@ -133,13 +135,16 @@ flowchart LR
 
 ## 快速开始
 
-**1. 下载**（[Releases](https://github.com/wohongshi/ima-hub/releases) 三平台任选，静态编译无依赖）：
+**1. 下载**（[Releases](https://github.com/wohongshi/ima-hub/releases) 任选，静态编译无依赖）：
 
 | 平台 | 产物 |
 | --- | --- |
-| Windows x64 | `imahub_0.4.0_windows-x86_64.exe` |
-| Linux x64 | `imahub_0.4.0_linux-x86_64` |
-| Linux ARM64（树莓派 / 开发板） | `imahub_0.4.0_linux-arm64` |
+| **Windows x64（桌面版·推荐）** | `imahub-desktop_0.4.1_windows-x86_64.exe` —— 双击即用，原生窗口 |
+| Windows x64（命令行） | `imahub_0.4.1_windows-x86_64.exe` |
+| Linux x64 | `imahub_0.4.1_linux-x86_64` |
+| Linux ARM64（树莓派 / 开发板） | `imahub_0.4.1_linux-arm64` |
+
+> **桌面版**：Win11 自带 WebView2 直接跑；Win10 若提示缺运行时，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（微软官方免费）。数据默认存 `%APPDATA%\ImaHub`，备份该目录=备份全部。
 
 **2. 起节点**（每台机器各起一个，就是互联的两端）：
 
@@ -283,7 +288,7 @@ bash scripts/probe_kb.sh        # 知识库代理探针（22 断言，双节点 
 bash scripts/probe_peer.sh      # P2P 发现/邀请/申请/补投探针（14 断言）
 bash scripts/probe_queue.sh     # 离线队列探针（15 断言）
 bash scripts/smoke.sh           # 全接口冒烟
-bash scripts/build.sh           # 三平台打包（自清 dist/，静态编译）
+bash scripts/build.sh           # 全平台打包（含 Windows 桌面版，自清 dist/，静态编译）
 ```
 
 - **74 项行为探针**：P2P 发现/申请 14 + 知识库代理 22 + 离线队列 15 + 双端 E2E 13 + 安全/回滚 10（mock 栈跑，ALL_GREEN 才算过）

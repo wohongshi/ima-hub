@@ -4,16 +4,12 @@ package main
 
 import (
 	"context"
-	"embed"
 	"flag"
-	"hash/fnv"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,10 +21,8 @@ import (
 	"imahub/internal/peer"
 	"imahub/internal/scan"
 	"imahub/internal/store"
+	"imahub/web"
 )
-
-//go:embed web
-var webFS embed.FS
 
 func main() {
 	// 双模式：imahub serve（默认，全功能服务端）| imahub client（组员客户端：直连 + 离线同步）
@@ -131,12 +125,7 @@ func main() {
 	mux.Handle("/healthz", srv.Handler())
 
 	// 静态 WebUI（内嵌），SPA 回退到 index.html
-	sub, err := fs.Sub(webFS, "web")
-	if err != nil {
-		log.Fatalf("内嵌资源失败: %v", err)
-	}
-	fileServer := http.FileServer(http.FS(sub))
-	mux.Handle("/", spaHandler(sub, fileServer))
+	mux.Handle("/", web.SPAHandler())
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -184,47 +173,4 @@ func main() {
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Printf("优雅退出未完成（强制关闭）: %v", err)
 	}
-}
-
-// spaHandler 静态资源优先；未命中的路径回退 index.html。
-func spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if p != "/" {
-			// fs.FS 路径恒为斜杠分隔，用 path.Clean（filepath 在 Windows 上会转反斜杠导致永远查不到）
-			if _, err := fs.Stat(sub, path.Clean(strings.TrimPrefix(p, "/"))); err != nil {
-				r2 := r.Clone(r.Context())
-				r2.URL.Path = "/"
-				fileServer.ServeHTTP(w, r2)
-				return
-			}
-		}
-		if isStaticAsset(p) {
-			// ETag + must-revalidate：内容不变回 304 省流量，发版即生效（无需版本号簿记）
-			if data, err := fs.ReadFile(sub, path.Clean(strings.TrimPrefix(p, "/"))); err == nil {
-				h := fnv.New32a()
-				h.Write(data)
-				etag := `"` + strconv.FormatUint(uint64(h.Sum32()), 16) + `"`
-				w.Header().Set("ETag", etag)
-				w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
-				if r.Header.Get("If-None-Match") == etag {
-					w.WriteHeader(http.StatusNotModified)
-					return
-				}
-			}
-		} else {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
-		fileServer.ServeHTTP(w, r)
-	})
-}
-
-// isStaticAsset 可指纹缓存的静态资源（HTML 始终 no-cache）。
-func isStaticAsset(p string) bool {
-	for _, ext := range []string{".js", ".css", ".png", ".svg", ".ico", ".jpg", ".jpeg", ".gif", ".woff", ".woff2"} {
-		if strings.HasSuffix(p, ext) {
-			return true
-		}
-	}
-	return false
 }

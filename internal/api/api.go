@@ -19,7 +19,7 @@ import (
 	"imahub/internal/store"
 )
 
-const Version = "0.4.0"
+const Version = "0.4.1"
 
 type Server struct {
 	Store      *store.Store

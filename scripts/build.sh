@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ImaHub 打包脚本：Windows x86_64 exe + Linux x86_64 + Linux arm64（可选 armv7）。
-# 用法：bash scripts/build.sh [--all]   （默认只出三个主目标）
-# 产物：dist/imahub_<版本>_<系统>_<架构>[.exe]
+# ImaHub 打包脚本：Windows x86_64 exe + Linux x86_64 + Linux arm64（可选 armv7）+ Windows 桌面版。
+# 用法：bash scripts/build.sh [--all]   （默认出四个主目标）
+# 产物：dist/imahub_<版本>_<系统>_<架构>[.exe] + imahub-desktop_<版本>_windows-x86_64.exe + SHA256SUMS
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,6 +27,16 @@ if [ "${1:-}" = "--all" ]; then
   build_one linux arm 7 linux-armv7
 fi
 
+# 桌面版（Windows 原生窗口壳，内嵌同款引擎；图标/版本资源经 windres 嵌入，无 windres 则用仓库内预编译 .syso）
+if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
+  x86_64-w64-mingw32-windres -O coff -I desktop -o desktop/rsrc_windows_amd64.syso desktop/imahub.rc
+fi
+DESK="$OUT/imahub-desktop_${VERSION}_windows-x86_64.exe"
+echo "==> $DESK"
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -H windowsgui" -o "$DESK" ./desktop
+
 echo
+( cd "$OUT" && sha256sum imahub* > SHA256SUMS )
 echo "打包完成："
 ls -la "$OUT"
