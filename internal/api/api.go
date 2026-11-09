@@ -255,6 +255,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	// 单人模式：用户名可省（默认 admin），界面只问密码
+	if strings.TrimSpace(req.Username) == "" {
+		req.Username = "admin"
+	}
 	u, err := s.buildUser(req.Username, req.Password, "admin")
 	if err != nil {
 		writeBizErr(w, err.Error())
@@ -346,10 +350,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DeviceToken string `json:"device_token"`
 	}
 	if !decodeBody(w, r, &req) {
+		return
+	}
+	// 设备免登录（单人模式「记住本机」）：token 有效即建会话，无需密码
+	if req.DeviceToken != "" {
+		u, err := s.Store.DeviceLogin(req.DeviceToken)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, 401, "设备免登录已失效，请用密码登录")
+			return
+		}
+		if u.Disabled {
+			writeErr(w, http.StatusForbidden, 403, "账号已被禁用")
+			return
+		}
+		if err := s.setSessionCookie(w, r, u); err != nil {
+			writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
+			return
+		}
+		writeOK(w, map[string]any{"user": publicUser(u)})
 		return
 	}
 	u, ok := s.Store.FindUserByName(req.Username)
@@ -488,6 +511,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, u 
 	}
 	if err := s.Store.RevokeUserSessionsExcept(u.ID, keep); err != nil {
 		log.Printf("吊销旧会话失败: %v", err)
+	}
+	// 改密同时清免登录设备：旧设备不再能免密进来
+	if err := s.Store.RevokeUserDevices(u.ID); err != nil {
+		log.Printf("吊销免登录设备失败: %v", err)
 	}
 	writeOK(w, nil)
 }

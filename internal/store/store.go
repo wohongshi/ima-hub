@@ -158,6 +158,8 @@ type data struct {
 	AccessRequests map[string]AccessRequest `json:"access_requests,omitempty"`
 	// Groups 群组：对等节点任务/日程共享圈（按 ID LWW 收敛）。
 	Groups map[string]Group `json:"groups,omitempty"`
+	// Devices 免登录设备 token（单人模式「记住本机」，按 ID 索引）。
+	Devices map[string]DeviceToken `json:"devices,omitempty"`
 }
 
 type Store struct {

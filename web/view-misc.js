@@ -7,6 +7,7 @@ async function renderSettingsView(root) {
     '<div class="settings-page">' +
     '  <div class="card" id="set-account"></div>' +
     '  <div class="card" id="set-password"></div>' +
+    '  <div class="card" id="set-devices"></div>' +
     (isClientMode() ? '  <div class="card" id="set-server"></div>' : '') +
     '  <div class="card" id="set-myima"></div>' +
     '  <div class="card" id="set-ima"></div>' +
@@ -57,12 +58,55 @@ async function renderSettingsView(root) {
     btn.disabled = false;
   });
 
+  renderDevicesCard(root);
   renderImaCard(root);
   renderMyImaCard(root);
   if (isClientMode()) renderServerCard(root);
   renderAskCard(root);
   renderMcpCard(root);
   renderQueueCard(root);
+}
+
+/* ============ 免登录设备（单人模式「记住本机」） ============ */
+async function renderDevicesCard(root) {
+  const box = $('#set-devices', root);
+  if (!box) return;
+  if (isClientMode()) { box.classList.add('hidden'); return; }
+  box.innerHTML =
+    '<div class="card-head">' + icon('shield', 18) + '<h3>免登录设备</h3><span class="sub">记住本机的设备</span></div>' +
+    '<div class="card-body"><div class="loading-center"><div class="spinner"></div></div></div>';
+  let data = {};
+  try {
+    data = await apiGet('/api/me/devices', { silent: true });
+  } catch (e) {
+    $('.card-body', box).innerHTML = '<div class="hint">设备列表加载失败</div>';
+    return;
+  }
+  const items = data.devices || [];
+  const body = $('.card-body', box);
+  if (!items.length) {
+    body.innerHTML = '<div class="hint">暂无免登录设备</div>';
+    return;
+  }
+  body.innerHTML = '<div class="queue-list">' + items.map(function (d) {
+    return '<div class="queue-item" data-id="' + escapeHtml(d.id) + '">' +
+      '<div class="queue-item-main"><div class="queue-item-name">' + escapeHtml(d.name || '未命名设备') + '</div>' +
+      '<div class="muted">' + (d.last_used ? '最后使用 ' + escapeHtml(formatTime(d.last_used)) : '创建于 ' + escapeHtml(formatTime(d.created_at))) + '</div></div>' +
+      '<button class="btn sm danger" data-del>吊销</button>' +
+      '</div>';
+  }).join('') + '</div>';
+  $$('.queue-item', box).forEach(function (el) {
+    const id = el.getAttribute('data-id');
+    $('[data-del]', el).addEventListener('click', async function () {
+      const ok = await confirmDialog('吊销该设备的免登录？', { title: '吊销设备', danger: true, okText: '吊销' });
+      if (!ok) return;
+      try {
+        await api('DELETE', '/api/me/devices/' + encodeURIComponent(id), null, { silent: true });
+        toast('已吊销', 'success');
+        renderDevicesCard(root);
+      } catch (e) { /* api 层已提示 */ }
+    });
+  });
 }
 
 /* ============ 上传队列（离线排队，恢复后自动续传） ============ */

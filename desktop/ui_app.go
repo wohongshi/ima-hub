@@ -79,6 +79,16 @@ func (a *app) build() {
 	a.pwdInput = &ui.TextField{Placeholder: "密码", Password: true}
 	a.askInput = &ui.TextField{Placeholder: "向知识库提问…"}
 	a.rebuild()
+	// 免登录：本地 token 直登，成功则跳过登录页
+	go func() {
+		if a.tryDeviceLogin() {
+			a.mu.Lock()
+			a.screen = "main"
+			a.rebuild()
+			a.mu.Unlock()
+			go a.loadFor("home")
+		}
+	}()
 }
 
 // toast 提示（线程安全）。
@@ -112,7 +122,7 @@ func (a *app) buildLogin() ui.Node {
 		ui.L("密码", 12, th.Text2), pwd,
 		ui.Fixed(0, 6),
 		loginBtn,
-		ui.L("首次使用：第一个账号即为管理员", 11.5, th.Muted),
+		ui.L("一机一号，登录后记住本机", 11.5, th.Muted),
 	)
 	card := &ui.Box{BG: th.Panel, Radius: th.RadL, PadX: 34, PadY: 32, Shadow: true,
 		Child: ui.V(10, title, sub, ui.Fixed(0, 10), body)}
@@ -145,6 +155,7 @@ func (a *app) doLogin() {
 		a.rebuild()
 		a.mu.Unlock()
 		a.toast("欢迎回来，"+user, 0)
+		go a.issueDeviceToken() // 记住本机，下次免登录
 		go a.loadFor("home")
 	}()
 }

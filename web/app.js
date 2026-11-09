@@ -176,6 +176,8 @@ function renderAuthForm() {
     // 客户端模式：连接服务端（注册 / 初始化入口隐藏）
     tabs.classList.add('hidden');
     srvField.classList.remove('hidden');
+    $('#auth-username').closest('.field').classList.remove('hidden');
+    $('#auth-remember-wrap').classList.add('hidden');
     if (!srvInput.value && state.serverInfo && state.serverInfo.server) srvInput.value = state.serverInfo.server;
     title.textContent = '连接服务端';
     sub.textContent = '登录服务端账号';
@@ -191,15 +193,21 @@ function renderAuthForm() {
 
   if (mode === 'setup') {
     tabs.classList.add('hidden');
-    title.textContent = '初始化管理员';
-    sub.textContent = '首次使用，请创建管理员账号（自动登录）';
-    submit.textContent = '创建管理员并进入';
+    // 单人模式：账号自动叫 admin，只问密码
+    $('#auth-username').closest('.field').classList.add('hidden');
+    $('#auth-username').value = 'admin';
+    $('#auth-remember-wrap').classList.remove('hidden');
+    title.textContent = '设置本机账号';
+    sub.textContent = '一机一号，创建后直接进入';
+    submit.textContent = '创建并进入';
     pw2.classList.remove('hidden');
     pw2Input.required = true;
     $('#auth-password').setAttribute('autocomplete', 'new-password');
   } else {
     // 注册关闭时只剩「登录」一个 tab——整个切换条一并隐藏，别留孤零零一颗按钮
     tabs.classList.toggle('hidden', !allowRegister);
+    $('#auth-username').closest('.field').classList.remove('hidden');
+    $('#auth-remember-wrap').classList.remove('hidden');
     $$('#auth-tabs button').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-tab') === mode);
     });
@@ -221,6 +229,36 @@ function renderAuthForm() {
     }
   }
   mountIcons($('#login-view'));
+}
+
+/* ============ 免登录设备（单人模式「记住本机」） ============ */
+function deviceName() {
+  return /Android|iPhone|iPad|Mobile/.test(navigator.userAgent || '') ? '手机浏览器' : '桌面浏览器';
+}
+
+/* 登录/初始化成功后按勾选签发本机免登录 token（仅此一次保存到本地） */
+async function maybeIssueDeviceToken() {
+  const cb = $('#auth-remember');
+  if (!cb || !cb.checked) return;
+  try {
+    const d = await apiPost('/api/me/devices', { name: deviceName() }, { silent: true });
+    if (d && d.token) localStorage.setItem('ih_device', JSON.stringify({ id: d.id, token: d.token }));
+  } catch (e) { /* 免登录是便利功能，失败不挡进入 */ }
+}
+
+/* 本地 token 直登：成功即免密进入，失效则清掉回登录页 */
+async function tryDeviceLogin() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem('ih_device') || 'null'); } catch (e) { d = null; }
+  if (!d || !d.token) return false;
+  try {
+    await apiPost('/api/login', { device_token: d.token }, { silent: true });
+    await refreshMe({ silent: true });
+    return true;
+  } catch (e) {
+    localStorage.removeItem('ih_device');
+    return false;
+  }
 }
 
 function bindAuthEvents() {
@@ -257,8 +295,9 @@ function bindAuthEvents() {
       if (mode === 'setup') {
         await apiPost('/api/setup', { username: username, password: password });
         state.needSetup = false;
-        toast('管理员创建成功，欢迎使用 ImaHub', 'success');
+        toast('账号创建成功，欢迎使用 ImaHub', 'success');
         await refreshMe();
+        await maybeIssueDeviceToken();
         showApp();
       } else if (mode === 'register') {
         await apiPost('/api/register', { username: username, password: password });
@@ -272,6 +311,7 @@ function bindAuthEvents() {
         await apiPost('/api/login', loginBody);
         if (isClientMode()) saveServerEntry(loginBody.server, username);
         await refreshMe();
+        if (!isClientMode()) await maybeIssueDeviceToken();
         showApp();
       }
     } catch (err) {
@@ -419,6 +459,13 @@ async function boot() {
   $('#logout-btn').addEventListener('click', async function () {
     const ok = await confirmDialog('确定退出当前账号吗？', { title: '退出登录', okText: '退出' });
     if (!ok) return;
+    // 退出 = 本机免登录一并吊销（这台设备也不认识我了）
+    try {
+      let d = null;
+      try { d = JSON.parse(localStorage.getItem('ih_device') || 'null'); } catch (e2) { d = null; }
+      if (d && d.id) await api('DELETE', '/api/me/devices/' + encodeURIComponent(d.id), null, { silent: true });
+      localStorage.removeItem('ih_device');
+    } catch (e) { /* 吊销失败也照常退出 */ }
     try { await apiPost('/api/logout', {}); } catch (e) { /* 忽略 */ }
     state.user = null;
     state.me = null;
@@ -442,7 +489,12 @@ async function boot() {
     await refreshMe({ silent: true });
     showApp();
   } catch (e) {
-    showLogin(isClientMode() ? 'login' : (state.needSetup ? 'setup' : 'login'));
+    // 免登录设备：本地 token 直登，成功就不打扰
+    if (!isClientMode() && (await tryDeviceLogin())) {
+      showApp();
+    } else {
+      showLogin(isClientMode() ? 'login' : (state.needSetup ? 'setup' : 'login'));
+    }
   }
 }
 

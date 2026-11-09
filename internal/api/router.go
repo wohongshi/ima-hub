@@ -30,6 +30,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me/mcp-token", s.requireAuth(s.handleMCPToken))
 	mux.HandleFunc("POST /api/me/mcp-token/rotate", s.requireAuth(s.handleRotateMCPToken))
 
+	// 免登录设备（单人模式「记住本机」）
+	mux.HandleFunc("GET /api/me/devices", s.requireAuth(s.handleDeviceList))
+	mux.HandleFunc("POST /api/me/devices", s.requireAuth(s.handleDeviceCreate))
+	mux.HandleFunc("DELETE /api/me/devices/{id}", s.requireAuth(s.handleDeviceDelete))
+
 	// 离线同步（客户端）：改动回传 + 团队数据/分发 key 拉取
 	mux.HandleFunc("POST /api/sync/push", s.requireAuth(s.handleSyncPush))
 	mux.HandleFunc("GET /api/sync/pull", s.requireAuth(s.handleSyncPull))

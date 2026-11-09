@@ -30,6 +30,7 @@ import (
 // engine 一个完整节点引擎（serve 能力全量）。
 type engine struct {
 	url     string
+	dataDir string
 	mux     *http.ServeMux
 	httpSrv *http.Server
 	ln      net.Listener
@@ -99,6 +100,7 @@ func boot(dataDir, addr, imaBase string) (*engine, error) {
 
 	e := &engine{
 		url:     "http://127.0.0.1:" + portStr,
+		dataDir: dataDir,
 		mux:     mux,
 		ln:      ln,
 		stopLan: make(chan struct{}),
