@@ -193,10 +193,11 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request, u *stor
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, u *store.User) {
 	var req struct {
-		Title  string          `json:"title"`
-		Note   string          `json:"note"`
-		Status string          `json:"status"`
-		Due    json.RawMessage `json:"due"`
+		Title   string          `json:"title"`
+		Note    string          `json:"note"`
+		Status  string          `json:"status"`
+		Due     json.RawMessage `json:"due"`
+		GroupID string          `json:"group_id"` // 群组共享（空=本地/团队）
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -214,12 +215,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, u *sto
 	}
 	t, err := s.Store.AddTask(store.Task{
 		UserID: u.ID, By: u.Username, Title: req.Title, Note: req.Note,
-		Status: req.Status, Due: normDue(req.Due),
+		Status: req.Status, Due: normDue(req.Due), GroupID: req.GroupID,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	s.hookTaskChanged("upsert", t) // 群组条目广播（离线走 outbox 补投）
 	writeOK(w, map[string]any{"task": t})
 }
 
@@ -263,11 +265,27 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request, u *sto
 		writeBizErr(w, err.Error())
 		return
 	}
+	// 广播取 bump 后的最终态（闭包拷贝在时间戳递增之前，会被 LWW 判旧拒收）
+	var final store.Task
+	for _, t := range s.Store.ListTasks() {
+		if t.ID == id {
+			final = t
+		}
+	}
+	s.hookTaskChanged("upsert", final) // 群组条目广播
 	writeOK(w, nil)
 }
 
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
+	// 先取删除前副本：群组墓碑广播需要 group_id
+	var prev store.Task
+	for _, t := range s.Store.ListTasks() {
+		if t.ID == id {
+			prev = t
+			break
+		}
+	}
 	if err := s.Store.DeleteTask(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, 404, "任务不存在")
@@ -276,5 +294,6 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request, u *sto
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	s.hookTaskDeleted(prev) // 群组删除广播（墓碑时间戳给对端 LWW）
 	writeOK(w, nil)
 }

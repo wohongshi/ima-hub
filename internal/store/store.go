@@ -63,8 +63,9 @@ type Task struct {
 	By        string `json:"by"`      // 创建人用户名
 	Title     string `json:"title"`
 	Note      string `json:"note"`
-	Status    string `json:"status"` // todo | doing | done
-	Due       any    `json:"due"`    // 兼容日期字符串（2026-11-07）/Unix 秒/""（无）
+	Status    string `json:"status"`             // todo | doing | done
+	Due       any    `json:"due"`                // 兼容日期字符串（2026-11-07）/Unix 秒/""（无）
+	GroupID   string `json:"group_id,omitempty"` // 群组共享（空=本地/团队）
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 }
@@ -80,6 +81,7 @@ type Event struct {
 	AllDay    bool   `json:"all_day"`
 	Location  string `json:"location"`
 	Note      string `json:"note"`
+	GroupID   string `json:"group_id,omitempty"` // 群组共享（空=本地/团队）
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 }
@@ -132,6 +134,9 @@ type Settings struct {
 	ClientSessionUser  string `json:"client_session_user,omitempty"`
 	ClientLastSync     int64  `json:"client_last_sync,omitempty"`
 	ClientActivitySync int64  `json:"client_activity_sync,omitempty"` // 活动流水增量游标（已推送的最大 At）
+	// 公网发现 + 中继（imahub discover 服务地址）；PublicAddr 为可选对外地址（公网映射后手填）
+	DiscoverURL string `json:"discover_url,omitempty"`
+	PublicAddr  string `json:"public_addr,omitempty"`
 }
 
 type data struct {
@@ -151,6 +156,8 @@ type data struct {
 	UploadQueue []UploadQueueItem `json:"upload_queue,omitempty"`
 	// AccessRequests P2P 访问申请制共享（按 ID 收敛）。
 	AccessRequests map[string]AccessRequest `json:"access_requests,omitempty"`
+	// Groups 群组：对等节点任务/日程共享圈（按 ID LWW 收敛）。
+	Groups map[string]Group `json:"groups,omitempty"`
 }
 
 type Store struct {
@@ -531,7 +538,7 @@ func (s *Store) UpdateTask(id string, fn func(*Task) error) error {
 			if err := fn(&cp); err != nil {
 				return err
 			}
-			cp.UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = BumpTS(cp.UpdatedAt, time.Now().Unix())
 			s.d.Tasks[i] = cp
 			return s.saveLocked()
 		}
@@ -551,6 +558,14 @@ func (s *Store) DeleteTask(id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+// BumpTS 本地变更时间戳单调递增：同秒连改不被 LWW 严格小于吞掉。
+func BumpTS(cur, now int64) int64 {
+	if now <= cur {
+		return cur + 1
+	}
+	return now
 }
 
 // --- 离线同步（客户端 LWW 合并） ---
@@ -765,7 +780,7 @@ func (s *Store) UpdateQueueItem(id string, fn func(*UploadQueueItem) error) erro
 			if err := fn(&cp); err != nil {
 				return err
 			}
-			cp.UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = BumpTS(cp.UpdatedAt, time.Now().Unix())
 			s.d.UploadQueue[i] = cp
 			return s.saveLocked()
 		}
@@ -910,7 +925,7 @@ func (s *Store) UpdateEvent(id string, fn func(*Event) error) error {
 			if err := fn(&cp); err != nil {
 				return err
 			}
-			cp.UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = BumpTS(cp.UpdatedAt, time.Now().Unix())
 			s.d.Events[i] = cp
 			return s.saveLocked()
 		}
@@ -967,7 +982,7 @@ func (s *Store) UpdateAnnouncement(id string, fn func(*Announcement) error) erro
 			if err := fn(&cp); err != nil {
 				return err
 			}
-			cp.UpdatedAt = time.Now().Unix()
+			cp.UpdatedAt = BumpTS(cp.UpdatedAt, time.Now().Unix())
 			s.d.Announcements[i] = cp
 			return s.saveLocked()
 		}

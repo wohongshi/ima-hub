@@ -55,10 +55,20 @@ func (a *app) loadFor(nav string) {
 			a.access = asArr(d["requests"])
 			a.mu.Unlock()
 		}
+		if d, err := a.cli.get("/api/groups"); err == nil {
+			a.mu.Lock()
+			a.groups = asArr(d["groups"])
+			a.mu.Unlock()
+		}
 	case "schedule":
 		if d, err := a.cli.get("/api/tasks"); err == nil {
 			a.mu.Lock()
 			a.tasks = asArr(d["tasks"])
+			a.mu.Unlock()
+		}
+		if d, err := a.cli.get("/api/groups"); err == nil {
+			a.mu.Lock()
+			a.groups = asArr(d["groups"])
 			a.mu.Unlock()
 		}
 		if d, err := a.cli.get("/api/dashboard"); err == nil {
@@ -291,6 +301,7 @@ func (a *app) buildPeers() ui.Node {
 	return ui.V(16, head,
 		&ui.Box{BG: th.Panel, Radius: th.RadM, Pad: 18, Shadow: true, Child: ui.V(8, rows...)},
 		&ui.Box{BG: th.Panel, Radius: th.RadM, Pad: 18, Shadow: true, Child: ui.V(8, accRows...)},
+		a.buildGroupsCard(),
 	)
 }
 
@@ -466,6 +477,7 @@ func (a *app) buildSchedule() ui.Node {
 			Child: ui.HA(12, 0.5, check,
 				ui.VA(2, 0, ui.L(title, 13, fg), ui.L("截止 "+due, 10.5, th.Muted)),
 				ui.Fill(),
+				a.groupBadgeOf(str(t["group_id"])),
 				ui.L(statusLabel(status), 11, th.Muted),
 			)})
 	}
@@ -479,7 +491,9 @@ func (a *app) openNewTask() {
 	th := a.sh.Th
 	title := &ui.TextField{Placeholder: "任务标题"}
 	due := &ui.TextField{Placeholder: "截止日期（如 2026-11-30，可空）"}
+	sel := ""
 	body := ui.V(12, ui.L("标题", 12, th.Text2), title, ui.L("截止", 12, th.Text2), due)
+	body = ui.V(12, append(body.Children, a.groupPickRows(&sel)...)...)
 	m := ui.NewModal("新建任务", body, ui.HA(10, 1,
 		ui.Fill(),
 		ui.NewButton("取消", ui.BtnGhost, func() { a.sh.PopOverlay() }),
@@ -489,7 +503,11 @@ func (a *app) openNewTask() {
 				return
 			}
 			go func() {
-				_, err := a.cli.post("/api/tasks", map[string]any{"title": title.Value(), "due": due.Value()})
+				payload := map[string]any{"title": title.Value(), "due": due.Value()}
+				if sel != "" {
+					payload["group_id"] = sel
+				}
+				_, err := a.cli.post("/api/tasks", payload)
 				if err != nil {
 					a.toast(err.Error(), 2)
 					return

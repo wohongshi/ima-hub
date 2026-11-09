@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"imahub/internal/api"
+	"imahub/internal/discover"
 	"imahub/internal/mcp"
 	"imahub/internal/peer"
 	"imahub/internal/scan"
@@ -28,9 +29,16 @@ func main() {
 	// 双模式：imahub serve（默认，全功能服务端）| imahub client（组员客户端：直连 + 离线同步）
 	mode := "serve"
 	args := os.Args[1:]
-	if len(args) > 0 && (args[0] == "client" || args[0] == "serve") {
+	if len(args) > 0 && (args[0] == "client" || args[0] == "serve" || args[0] == "discover") {
 		mode = args[0]
 		args = args[1:]
+	}
+	if mode == "discover" {
+		// 公网发现 + 中继服务器（地址目录 + 信箱；无状态，内存表）
+		fl := flag.NewFlagSet("imahub-discover", flag.ExitOnError)
+		daddr := fl.String("addr", ":8443", "监听地址（公网部署建议挂 HTTPS 反代）")
+		fl.Parse(args)
+		log.Fatal(discover.New().Run(*daddr))
 	}
 	defaultAddr := ":8090"
 	if mode == "client" {
@@ -112,9 +120,27 @@ func main() {
 		close(stopLan)
 		log.Printf("客户端模式：P2P 发现/离线投递未启用")
 	} else {
+		stAll := st.GetSettings()
+		relayURL := strings.TrimRight(stAll.DiscoverURL, "/")
 		go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, stopLan) // 发现即补投
-		go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投：掉线消息自动重试
+		go peer.RunOutbox(stopLan, pob, ptable, pid, apiPort, 5*time.Second, relayURL)                      // 离线补投：直连失败走中继信箱
 		defer close(stopLan)
+		// 公网发现 + 中继（配置了发现服务器才启用）
+		if relayURL != "" {
+			adv := []string{}
+			if v := strings.TrimSpace(stAll.PublicAddr); v != "" {
+				adv = append(adv, v)
+			}
+			go peer.RunDiscovery(stopLan, pid, ptable, peer.DiscoveryOpts{
+				BaseURL:    relayURL,
+				Advertised: adv,
+				LocalAddrs: func() []string { return peer.LocalAddrs(apiPort) },
+				SelfURL:    "http://127.0.0.1:" + strconv.Itoa(apiPort),
+			})
+			// UPnP 尽力映射（失败静默：中继兜底）
+			go peer.TryUPnP(apiPort, stopLan)
+			log.Printf("公网发现已启用：%s", relayURL)
+		}
 		log.Printf("节点 ID: %s（%s）· 局域网发现 %d/udp · 直连 %d/tcp", peer.FormatID(pid.NodeID()), pid.Nick(), srv.PeerLanPort, apiPort)
 	}
 

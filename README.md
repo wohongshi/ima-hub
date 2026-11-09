@@ -10,9 +10,9 @@
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="Go 1.26">
   <img src="https://img.shields.io/badge/platform-windows%20%C2%B7%20linux%20%C2%B7%20arm64-2ea44f" alt="platforms">
   <img src="https://img.shields.io/badge/MCP-15%20tools-8b5cf6" alt="MCP 15 tools">
-  <img src="https://img.shields.io/badge/probes-74%20assertions-brightgreen" alt="74 assertions">
+  <img src="https://img.shields.io/badge/probes-90%20assertions-brightgreen" alt="74 assertions">
   <img src="https://img.shields.io/badge/deps-pure%20Go%20zero%20SDK-555" alt="pure Go zero SDK">
-  <img src="https://img.shields.io/badge/release-v0.5.0-blueviolet" alt="v0.5.0">
+  <img src="https://img.shields.io/badge/release-v0.6.0-blueviolet" alt="v0.6.0">
   <img src="https://img.shields.io/badge/desktop-Windows%20GUI-2ea44f" alt="Windows desktop">
 </p>
 
@@ -47,6 +47,8 @@
 
 - 🖥️ **Windows 桌面版**：双击即用的原生窗口软件，**界面引擎完全自写**（软渲染直绘，零 WebView2/浏览器内核依赖）——开着窗口就是一个全功能节点
 - 🌐 **P2P 节点网络**：人人都是客户端、人人都是服务端——局域网自动发现 + 邀请码互联，无需中心服务器
+- 🌍 **公网发现 + NAT**：配置一个 `imahub discover` 目录/中继服务器即可跨网互联——UPnP 尽力映射、直连失败自动走中继信箱（端到端加密照旧）
+- 👥 **群组共享**：建群拉上节点伙伴，任务/日程一键共享，全员可改 LWW 收敛，退组/解散干净利落
 - 🤝 **申请制共享**：向对方申请 search / browse / download 三档访问，可限知识库、可设有效期，批准可撤销；**你的 ima key 永不出你的机器**
 - 📨 **掉线容错**：给掉线的节点发消息照样成功，指数退避重试，对方一上线立即补投（探针实测）
 - 🗂️ **共享知识库**：经授权浏览/检索/下载对方知识库，文件夹下钻、全文检索、直链下载
@@ -86,7 +88,8 @@ internal/store/         JSON 持久化（用户/会话/队列/申请/墓碑，�
 internal/auth/          PBKDF2 口令哈希
 internal/ima/           自写 ima 引擎（wiki/note 接口、COS 签名上传、压缩包解压）
 internal/ask/           RAG 问答（跨账号检索 + OpenAI 兼容合成）
-internal/peer/          P2P：Ed25519+X25519 身份、组播发现、邀请码、加密 RPC、离线补投
+internal/peer/          P2P：身份/发现/邀请/加密 RPC/离线补投/公网发现客户端/UPnP
+internal/discover/      公网发现 + 中继服务器（imahub discover 单命令部署）
 internal/ui/            自写界面引擎（2x 抗锯齿软渲染、矢量/文字/控件，零 WebView2）
 internal/api/           REST 80 路由（同步、上传队列、节点、访问申请、知识库代理）
 internal/scan/          知识库后台扫描（统计快照，账号级并发）
@@ -121,6 +124,18 @@ docs/                   API 契约、评审处置表、截图素材
 
 获授权后在「节点」页点「知识库」：KB 列表 → 文件夹下钻 → 全文检索（高亮摘要）→ 直链下载。越权即拒（含 **media↔知识库绑定**校验：拿 A 库的授权下不了 B 库的文件）。
 
+### 公网发现与中继（跨网互联）
+
+```bash
+./imahub discover --addr :8443    # 公网任一主机部署（建议挂 HTTPS 反代）
+```
+
+节点「设置」里填发现服务器地址即启用：30s 心跳注册（含本机地址 + 服务端观测地址）、60s 目录拉取补全已信任节点地址、20s 轮询中继信箱。**发现≠信任**——目录只帮你找到地址，互信仍走邀请码/申请制。NAT 场景三层递进：UPnP 尽力映射 → 直连 → 中继信箱兜底（异步消息；知识库查询需在线直连）。
+
+### 群组（任务/日程共享圈）
+
+建群拉上你的节点伙伴（对方即刻入组），任务/日程创建时选「共享到群组」即可全员同步：任意成员可增改删，LWW+墓碑收敛不打架；退组/解散对全员即时生效。掉线成员上线自动补齐（outbox 补投复用）。
+
 ### 掉线容错
 
 ```mermaid
@@ -140,10 +155,10 @@ flowchart LR
 
 | 平台 | 产物 |
 | --- | --- |
-| **Windows x64（桌面版·推荐）** | `imahub-desktop_0.5.0_windows-x86_64.exe` —— 双击即用，自写界面引擎 |
-| Windows x64（命令行） | `imahub_0.5.0_windows-x86_64.exe` |
-| Linux x64 | `imahub_0.5.0_linux-x86_64` |
-| Linux ARM64（树莓派 / 开发板） | `imahub_0.5.0_linux-arm64` |
+| **Windows x64（桌面版·推荐）** | `imahub-desktop_0.6.0_windows-x86_64.exe` —— 双击即用，自写界面引擎 |
+| Windows x64（命令行） | `imahub_0.6.0_windows-x86_64.exe` |
+| Linux x64 | `imahub_0.6.0_linux-x86_64` |
+| Linux ARM64（树莓派 / 开发板） | `imahub_0.6.0_linux-arm64` |
 
 > **桌面版**：界面由自写渲染引擎直绘（2x 抗锯齿、矢量图标、系统字体），**不依赖 WebView2/浏览器内核**，双击即跑。数据默认存 `%APPDATA%\ImaHub`，备份该目录=备份全部。
 
@@ -286,6 +301,8 @@ flowchart LR
 ```bash
 bash tools/readme_numbers.sh    # README 数字口径重算
 go vet ./... && go test ./...   # 单测：LWW/墓碑、队列、解压、口令、P2P 身份/信封/授权
+bash scripts/probe_group.sh     # 群组探针（9 断言）
+bash scripts/probe_discover.sh  # 公网发现/中继探针（7 断言）
 bash scripts/probe_kb.sh        # 知识库代理探针（22 断言，双节点 + mock）
 bash scripts/probe_peer.sh      # P2P 发现/邀请/申请/补投探针（14 断言）
 bash scripts/probe_queue.sh     # 离线队列探针（15 断言）
@@ -293,7 +310,7 @@ bash scripts/smoke.sh           # 全接口冒烟
 bash scripts/build.sh           # 全平台打包（含 Windows 桌面版，自清 dist/，静态编译）
 ```
 
-- **74 项行为探针**：P2P 发现/申请 14 + 知识库代理 22 + 离线队列 15 + 双端 E2E 13 + 安全/回滚 10（mock 栈跑，ALL_GREEN 才算过）
+- **90 项行为探针**：群组 9 + 公网发现/中继 7 + P2P 发现/申请 14 + 知识库代理 22 + 离线队列 15 + 双端 E2E 13 + 安全/回滚 10（mock 栈跑，ALL_GREEN 才算过）
 - **发布流程**：版本号改**两处**（`internal/api/api.go` 与 `internal/mcp/mcp.go`）→ 打包 → 验产物自报版本 → 发 Release
 - 代码规模：Go 10,600+ 行 + 前端 6,300+ 行；23 个单测函数；REST 80 路由（口径见 `tools/readme_numbers.sh`）
 

@@ -19,7 +19,7 @@ import (
 	"imahub/internal/store"
 )
 
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 type Server struct {
 	Store      *store.Store
@@ -779,6 +779,8 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request, 
 		"ask_base_url":            st.AskBaseURL,
 		"ask_model":               st.AskModel,
 		"ask_api_key_set":         st.AskAPIKey != "",
+		"discover_url":            st.DiscoverURL,
+		"public_addr":             st.PublicAddr,
 	})
 }
 
@@ -791,6 +793,8 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, 
 		AskBaseURL         *string `json:"ask_base_url"`
 		AskModel           *string `json:"ask_model"`
 		AskAPIKey          *string `json:"ask_api_key"`
+		DiscoverURL        *string `json:"discover_url"`
+		PublicAddr         *string `json:"public_addr"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -816,6 +820,12 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, 
 		}
 		if req.AskAPIKey != nil && *req.AskAPIKey != "" {
 			st.AskAPIKey = strings.TrimSpace(*req.AskAPIKey)
+		}
+		if req.DiscoverURL != nil {
+			st.DiscoverURL = strings.TrimSpace(*req.DiscoverURL)
+		}
+		if req.PublicAddr != nil {
+			st.PublicAddr = strings.TrimSpace(*req.PublicAddr)
 		}
 		return nil
 	})

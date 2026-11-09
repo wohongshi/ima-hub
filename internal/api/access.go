@@ -306,8 +306,9 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, 400, "载荷解密失败")
 		return
 	}
-	// 实见地址自愈：真实可达地址覆盖声称地址（签名信封已证明身份，防假地址投递失败）
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && e.Port > 0 {
+	// 实见地址自愈：真实可达地址覆盖声称地址（签名信封已证明身份，防假地址投递失败）。
+	// 中继回注（X-Peer-Relay）跳过：来源是本机回环，自愈会把地址改成 127.0.0.1。
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && e.Port > 0 && r.Header.Get("X-Peer-Relay") == "" {
 		s.PeerTable.Upsert(peer.Peer{
 			ID: e.From, Pub: p.Pub, XPub: e.XPub,
 			Addr: host, TCPPort: e.Port, LastSeen: time.Now().Unix(),
@@ -315,6 +316,11 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	// 知识库查询：同步加密回包应答（kb.list/search/browse/download）
 	if strings.HasPrefix(e.Kind, "kb.") {
+		if r.Header.Get("X-Peer-Relay") != "" {
+			// 中继信箱无法回传同步回包——提示对方在线直连
+			writeErr(w, http.StatusBadRequest, 400, "中继通道不支持同步查询，请等对方在线直连")
+			return
+		}
 		s.handlePeerKBQuery(w, r, e, body)
 		return
 	}
@@ -417,6 +423,29 @@ func (s *Server) handlePeerRPC(w http.ResponseWriter, r *http.Request) {
 			writeOK(w, map[string]any{"ok": true, "dup": true})
 			return
 		}
+	case "group.upsert":
+		var in struct {
+			Group store.Group `json:"group"`
+		}
+		if err := json.Unmarshal(body, &in); err != nil || in.Group.ID == "" {
+			writeErr(w, http.StatusBadRequest, 400, "载荷非法")
+			return
+		}
+		s.handlePeerGroupUpsert(in.Group)
+	case "group.event":
+		var in groupEventMsg
+		if err := json.Unmarshal(body, &in); err != nil || in.GroupID == "" {
+			writeErr(w, http.StatusBadRequest, 400, "载荷非法")
+			return
+		}
+		s.handlePeerGroupEvent(in)
+	case "group.leave":
+		var in groupLeaveMsg
+		if err := json.Unmarshal(body, &in); err != nil || in.GroupID == "" {
+			writeErr(w, http.StatusBadRequest, 400, "载荷非法")
+			return
+		}
+		s.handlePeerGroupLeave(in)
 	default:
 		writeErr(w, http.StatusBadRequest, 400, "未知消息类型: "+e.Kind)
 		return

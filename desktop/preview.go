@@ -60,4 +60,5 @@ func seedPreview(app *app) {
 	app.cli.post("/api/tasks", map[string]any{"title": "验收 P2P 共享联调", "due": today, "status": "doing"})
 	app.cli.post("/api/tasks", map[string]any{"title": "更新部署文档", "status": "done"})
 	app.cli.post("/api/me/ima", map[string]any{"name": "演示账号", "client_id": "demo_client", "api_key": "demo_key", "upload_kb_id": "kb1"})
+	app.cli.post("/api/groups", map[string]any{"name": "学习小组", "members": []string{}})
 }

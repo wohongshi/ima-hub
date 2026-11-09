@@ -400,6 +400,7 @@ async function startScan() {
 async function loadHomeTasks() {
   homeState.tasksLoading = true;
   renderHomeTasks();
+  if (!groupsState.list) ensureMyGroups().then(function () { renderHomeTasks(); }); // 群组下拉/徽章要群名
   try {
     const data = await apiGet('/api/tasks');
     homeState.tasks = (data && data.tasks) || [];
@@ -413,6 +414,7 @@ async function loadHomeTasks() {
 /* ============ 日程数据 ============ */
 async function loadHomeEvents() {
   homeState.eventsLoading = true;
+  if (!groupsState.list) ensureMyGroups().then(function () { renderHomeSchedule(); }); // 日程行群组徽章要群名
   try {
     const data = await apiGet('/api/events');
     homeState.events = (data && data.events) || [];
@@ -579,6 +581,7 @@ function renderHomeTasks() {
   const quick =
     '<div class="task-input-row">' +
     '<input class="input" id="task-quick-title" placeholder="添加任务，回车确认" maxlength="120">' +
+    '<select class="select" id="task-quick-group" title="共享到群组">' + groupSelectOptionsHtml('') + '</select>' +
     '<button class="btn primary" id="task-quick-add">' + icon('plus', 15) + '添加</button>' +
     '</div>';
 
@@ -604,6 +607,7 @@ function renderHomeTasks() {
         (t.note ? '  <div class="task-note">' + escapeHtml(t.note) + '</div>' : '') +
         '  <div class="task-meta">' +
         '    <span class="badge ' + taskStatusClass(t.status) + '">' + taskStatusLabel(t.status) + '</span>' +
+        groupBadgeHtml(t.group_id) +
         (t.by ? '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(t.by) + '</span>' : '') +
         (t.due ? '<span class="' + (over ? 'due-over' : 'muted') + '">' + (over ? '已过期 · ' : '截止 ') + escapeHtml(formatDue(t.due)) + '</span>' : '') +
         '  </div>' +
@@ -623,7 +627,10 @@ function renderHomeTasks() {
     if (!title) { toast('请输入任务标题', 'warn'); return; }
     addBtn.disabled = true;
     try {
-      const data = await apiPost('/api/tasks', { title: title });
+      const body = { title: title };
+      const gid = $('#task-quick-group', box) ? $('#task-quick-group', box).value : '';
+      if (gid) body.group_id = groupRawIdById(gid); // 共享到群组（保持 id 原始类型）
+      const data = await apiPost('/api/tasks', body);
       if (data && data.task) homeState.tasks.unshift(data.task);
       input.value = '';
       renderHomeTasks();
@@ -940,6 +947,7 @@ function renderHomeSchedule() {
       '<div class="ev-time">' + escapeHtml(fmtEventTime(ev)) + '</div></div>' +
       '<div class="ev-body"><div class="ev-title">' + escapeHtml(ev.title) + '</div>' +
       '<div class="ev-meta">' +
+      groupBadgeHtml(ev.group_id) +
       (ev.location ? '<span class="muted">' + escapeHtml(ev.location) + '</span>' : '') +
       (ev.by ? '<span class="chip">' + escapeHtml(ev.by) + '</span>' : '') +
       '</div></div>' +
@@ -1012,7 +1020,9 @@ function openEventModal(ev, presetDate) {
       '</div>' +
       '<div class="field"><label class="switch-line"><input type="checkbox" id="ev-allday"' + (ev && ev.all_day ? ' checked' : '') + '> 全天事件</label></div>' +
       '<div class="field"><label>地点（可选）</label><input class="input" id="ev-loc" maxlength="120" value="' + escapeHtml(ev ? (ev.location || '') : '') + '"></div>' +
-      '<div class="field"><label>备注（可选）</label><textarea class="textarea" id="ev-note" style="min-height:70px">' + escapeHtml(ev ? (ev.note || '') : '') + '</textarea></div>',
+      '<div class="field"><label>备注（可选）</label><textarea class="textarea" id="ev-note" style="min-height:70px">' + escapeHtml(ev ? (ev.note || '') : '') + '</textarea></div>' +
+      (isEdit ? '' :
+        '<div class="field"><label>共享到群组</label><select class="select" id="ev-group">' + groupSelectOptionsHtml('') + '</select></div>'),
     footer:
       (isEdit ? '<button class="btn" id="ev-del" style="color:var(--danger)">' + icon('trash', 14) + '删除</button>' : '') +
       '<button class="btn" data-close>取消</button>' +
@@ -1021,6 +1031,13 @@ function openEventModal(ev, presetDate) {
       const allDay = $('#ev-allday', root);
       const startI = $('#ev-start', root);
       const endI = $('#ev-end', root);
+      if (!isEdit) {
+        // 群组列表异步补齐（首次打开缓存可能未就绪）
+        ensureMyGroups().then(function () {
+          const sel = $('#ev-group', root);
+          if (sel) sel.innerHTML = groupSelectOptionsHtml('');
+        });
+      }
       const syncTimes = function () {
         startI.disabled = allDay.checked;
         endI.disabled = allDay.checked;
@@ -1046,6 +1063,10 @@ function openEventModal(ev, presetDate) {
           title: title, start_at: startAt, end_at: endAt, all_day: isAll,
           location: $('#ev-loc', root).value.trim(), note: $('#ev-note', root).value,
         };
+        if (!isEdit) {
+          const gid = $('#ev-group', root) ? $('#ev-group', root).value : '';
+          if (gid) payload.group_id = groupRawIdById(gid); // 共享到群组（保持 id 原始类型）
+        }
         const btn = $('#ev-save', root);
         btn.disabled = true;
         try {

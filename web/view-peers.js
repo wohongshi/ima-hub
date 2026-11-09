@@ -11,12 +11,14 @@ async function renderPeersView(root) {
     '  <div class="card" id="peer-me"></div>' +
     '  <div class="card" id="peer-list"></div>' +
     '  <div class="card" id="peer-access"></div>' +
+    '  <div class="card" id="peer-groups"></div>' +
     '</div>';
   const loading = '<div class="card-body"><div class="loading-center"><div class="spinner"></div></div></div>';
   $('#peer-me', root).innerHTML = loading;
   $('#peer-list', root).innerHTML = loading;
   $('#peer-access', root).innerHTML = loading;
-  await Promise.all([loadPeersView(root), loadAccessCard(root)]);
+  $('#peer-groups', root).innerHTML = loading;
+  await Promise.all([loadPeersView(root), loadAccessCard(root), loadGroupsCard(root)]);
   /* 30s 自动刷新：新发现的节点/在线状态不过期发霉；路由切走（DOM 换掉）即停 */
   clearTimeout(window.__peersPoll);
   (function tick() {
@@ -483,6 +485,292 @@ async function openAccessAskModal(root) {
       });
     },
   });
+}
+
+/* ============ 卡四：群组（多人任务 / 日程共享圈） ============ */
+/* 群组缓存：首页任务/日程的「共享到群组」下拉与徽章共用 */
+const groupsState = { list: null };
+
+/** 拉取我的群组（带缓存）；失败降级为空列表，不打断页面 */
+async function ensureMyGroups(force) {
+  if (!force && groupsState.list) return groupsState.list;
+  try {
+    const d = await apiGet('/api/groups', { silent: true });
+    groupsState.list = (d && d.groups) || [];
+  } catch (e) {
+    if (!groupsState.list) groupsState.list = [];
+  }
+  return groupsState.list;
+}
+
+/** 按 id 找群名（徽章用，找不到给兜底文案） */
+function groupNameById(id) {
+  const list = groupsState.list || [];
+  for (let i = 0; i < list.length; i++) {
+    if (String(list[i].id) === String(id)) return list[i].name || '';
+  }
+  return '';
+}
+
+/** 取群组 id 的原始类型（后端 id 可能是数字，回传保持原样） */
+function groupRawIdById(id) {
+  const list = groupsState.list || [];
+  for (let i = 0; i < list.length; i++) {
+    if (String(list[i].id) === String(id)) return list[i].id;
+  }
+  return id;
+}
+
+/** 任务/日程行的群组徽章（无 group_id 返回空串） */
+function groupBadgeHtml(groupId) {
+  if (groupId === undefined || groupId === null || groupId === '') return '';
+  return '<span class="badge grp-badge" title="共享群组">' + icon('users', 10) +
+    escapeHtml(groupNameById(groupId) || '群组') + '</span>';
+}
+
+/** 「共享到群组」下拉选项：默认不共享 + 我的群组名 */
+function groupSelectOptionsHtml(selectedId) {
+  const list = groupsState.list || [];
+  let html = '<option value="">不共享</option>';
+  list.forEach(function (g) {
+    html += '<option value="' + escapeHtml(String(g.id)) + '"' +
+      (String(g.id) === String(selectedId || '') ? ' selected' : '') + '>' +
+      escapeHtml(g.name || '(未命名)') + '</option>';
+  });
+  return html;
+}
+
+/* 刷新群组卡（建群/拉人/退组/解散后局部刷新，顺带更新共享缓存） */
+async function loadGroupsCard(root) {
+  const box = $('#peer-groups', root);
+  if (!box) return;
+  const groups = await ensureMyGroups(true);
+  renderGroupsCard(box, groups, root);
+}
+
+function renderGroupsCard(box, groups, root) {
+  box.innerHTML =
+    '<div class="card-head">' + icon('users', 18) + '<h3>群组</h3>' +
+    '<span class="sub">多人任务 / 日程共享</span>' +
+    '<div class="card-head-actions"><button class="btn sm primary" id="grp-new">' + icon('plus', 13) + '建群</button></div></div>' +
+    '<div class="card-body">' +
+    (groups.length
+      ? '<div class="acc-list">' + groups.map(groupRowHtml).join('') + '</div>'
+      : '<div class="acc-empty">还没有群组，点右上角「建群」拉上节点伙伴</div>') +
+    '</div>';
+  mountIcons(box);
+
+  $('#grp-new', box).addEventListener('click', function () { openGroupCreateModal(root); });
+  $$('.acc-row[data-gid]', box).forEach(function (row) {
+    const gid = row.getAttribute('data-gid');
+    const g = groups.filter(function (x) { return String(x.id) === gid; })[0];
+    if (!g) return;
+    const on = function (act, fn) {
+      const b = $('[data-act="' + act + '"]', row);
+      if (b) b.addEventListener('click', fn);
+    };
+    on('view', function () { openGroupFeedModal(g); });
+    on('add', function () { openGroupAddModal(root, g); });
+    on('leave', function () { leaveGroup(root, g); });
+    on('disband', function () { disbandGroup(root, g); });
+  });
+}
+
+/* 群组行：名称 + 成员头像点 + 人数/更新时间 + 行尾操作（复用 .acc-row 体系） */
+function groupRowHtml(g) {
+  const members = Array.isArray(g.members) ? g.members : [];
+  const avatars = members.slice(0, 6).map(function (m) {
+    const nick = m.nick || m.id || '?';
+    return '<span class="grp-avatar" title="' + escapeHtml(nick) + '">' + escapeHtml(nick.slice(0, 1)) + '</span>';
+  }).join('') + (members.length > 6 ? '<span class="grp-avatar">+' + (members.length - 6) + '</span>' : '');
+  return '<div class="acc-row" data-gid="' + escapeHtml(String(g.id)) + '">' +
+    '<div class="acc-main">' +
+    '<div class="acc-name"><span class="nm">' + escapeHtml(g.name || '(未命名)') + '</span>' +
+    '<span class="grp-avatars">' + avatars + '</span></div>' +
+    '<div class="acc-meta">' +
+    '<span>' + icon('user', 11) + ' ' + members.length + ' 人</span>' +
+    '<span title="' + escapeHtml(formatTime(g.updated_at || g.created_at)) + '">' +
+    escapeHtml(relativeTime(g.updated_at || g.created_at) || '—') + '</span>' +
+    '</div></div>' +
+    '<div class="acc-actions">' +
+    '<button class="btn sm" data-act="view">' + icon('eye', 13) + '查看</button>' +
+    '<button class="btn sm" data-act="add">拉人</button>' +
+    '<button class="btn sm" data-act="leave">退组</button>' +
+    '<button class="btn sm danger" data-act="disband">解散</button>' +
+    '</div></div>';
+}
+
+/* 成员复选列表（建群 / 拉人共用）：data-pid = 节点 ID */
+function groupPickHtml(peers) {
+  if (!peers.length) return '<div class="hint">暂无可用节点，先在上方添加节点</div>';
+  return peers.map(function (p) {
+    return '<label class="checkbox"><input type="checkbox" data-pid="' + escapeHtml(p.id) + '">' +
+      escapeHtml(p.nickname || p.id_pretty || p.id) + '</label>';
+  }).join('');
+}
+
+function readGroupPick(m) {
+  return $$('input[data-pid]', m)
+    .filter(function (i) { return i.checked; })
+    .map(function (i) { return i.getAttribute('data-pid'); });
+}
+
+/* 建群弹窗：群名 + 成员复选（从节点选，多选），建组即发邀请对方即刻入组 */
+async function openGroupCreateModal(root) {
+  let peers = [];
+  try {
+    const d = await apiGet('/api/peers', { silent: true });
+    peers = (d && d.peers) || [];
+  } catch (e) {
+    toast('节点列表加载失败', 'error');
+    return;
+  }
+  showModal({
+    title: '建群',
+    body:
+      '<div class="field"><label>群名</label><input class="input" id="gc-name" maxlength="40" placeholder="如：数学教研组" autocomplete="off"></div>' +
+      '<div class="field"><label>成员（从节点选择，可多选）</label><div class="grp-pick">' + groupPickHtml(peers) + '</div></div>' +
+      '<div class="hint">建群即向所选节点发邀请，对方即刻入组</div>',
+    footer: '<button class="btn" data-close>取消</button><button class="btn primary" id="gc-go">' + icon('plus', 15) + '建群</button>',
+    onMount: function (m, close) {
+      $('#gc-go', m).addEventListener('click', async function () {
+        const name = $('#gc-name', m).value.trim();
+        if (!name) { toast('请输入群名', 'warn'); return; }
+        const btn = $('#gc-go', m);
+        btn.disabled = true;
+        try {
+          await apiPost('/api/groups', { name: name, members: readGroupPick(m) });
+          close();
+          toast('群组已创建', 'success');
+          loadGroupsCard(root);
+        } catch (e) {
+          btn.disabled = false; // api 层已提示
+        }
+      });
+    },
+  });
+}
+
+/* 拉人弹窗：选不在群内的节点追加（PATCH {add:[节点ID]}） */
+async function openGroupAddModal(root, g) {
+  let peers = [];
+  try {
+    const d = await apiGet('/api/peers', { silent: true });
+    peers = (d && d.peers) || [];
+  } catch (e) {
+    toast('节点列表加载失败', 'error');
+    return;
+  }
+  const inGroup = {};
+  (Array.isArray(g.members) ? g.members : []).forEach(function (m) { inGroup[String(m.id)] = true; });
+  const candidates = peers.filter(function (p) { return !inGroup[String(p.id)]; });
+  if (!candidates.length) { toast('没有可拉入的节点', 'warn'); return; }
+  showModal({
+    title: '拉人进群',
+    body:
+      '<div class="hint acc-hint">「' + escapeHtml(g.name || '') + '」添加成员</div>' +
+      '<div class="field"><label>选择节点</label><div class="grp-pick">' + groupPickHtml(candidates) + '</div></div>',
+    footer: '<button class="btn" data-close>取消</button><button class="btn primary" id="ga-go">拉入</button>',
+    onMount: function (m, close) {
+      $('#ga-go', m).addEventListener('click', async function () {
+        const add = readGroupPick(m);
+        if (!add.length) { toast('至少选择一个节点', 'warn'); return; }
+        const btn = $('#ga-go', m);
+        btn.disabled = true;
+        try {
+          await apiPatch('/api/groups/' + encodeURIComponent(String(g.id)), { add: add });
+          close();
+          toast('已拉入群组', 'success');
+          loadGroupsCard(root);
+        } catch (e) {
+          btn.disabled = false; // api 层已提示
+        }
+      });
+    },
+  });
+}
+
+/* 群详情弹窗：群内任务 + 日程列表（带成员署名） */
+async function openGroupFeedModal(g) {
+  const m = showModal({
+    title: '群组 · ' + (g.name || '(未命名)'),
+    wide: true,
+    body: '<div class="loading-center"><div class="spinner"></div></div>',
+    footer: '<button class="btn" data-close>关闭</button>',
+  });
+  const body = $('.modal-body', m.root);
+  let feed = null;
+  try {
+    feed = await apiGet('/api/groups/' + encodeURIComponent(String(g.id)) + '/feed');
+  } catch (e) {
+    if (body) body.innerHTML = '<div class="acc-empty">群动态加载失败，请稍后重试</div>'; // api 层已 toast msg
+    return;
+  }
+  if (!body) return; // 弹窗已关闭，丢弃过期响应
+  const tasks = (feed && feed.tasks) || [];
+  const events = (feed && feed.events) || [];
+  const members = (feed && feed.group && feed.group.members) || g.members || [];
+  const taskRow = function (t) {
+    return '<div class="acc-row"><div class="acc-main">' +
+      '<div class="acc-name"><span class="nm">' + escapeHtml(t.title || '(无标题)') + '</span>' +
+      '<span class="badge ' + taskStatusClass(t.status) + '">' + taskStatusLabel(t.status) + '</span></div>' +
+      '<div class="acc-meta">' +
+      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(t.by || '未知') + '</span>' +
+      (t.due ? '<span class="muted">截止 ' + escapeHtml(formatDue(t.due)) + '</span>' : '') +
+      '<span class="muted">' + escapeHtml(relativeTime(t.created_at) || '—') + '</span>' +
+      '</div></div></div>';
+  };
+  const feedEvRow = function (ev) {
+    return '<div class="acc-row"><div class="acc-main">' +
+      '<div class="acc-name"><span class="nm">' + escapeHtml(ev.title || '(无标题)') + '</span>' +
+      '<span class="badge ' + (daysUntilText(ev) === '今天' ? 'warn' : 'muted') + '">' + escapeHtml(fmtEventTime(ev)) + '</span></div>' +
+      '<div class="acc-meta">' +
+      '<span class="muted">' + icon('user', 11) + ' ' + escapeHtml(ev.by || '未知') + '</span>' +
+      (ev.location ? '<span class="muted">' + escapeHtml(ev.location) + '</span>' : '') +
+      '<span class="muted">' + escapeHtml(daysUntilText(ev)) + '</span>' +
+      '</div></div></div>';
+  };
+  body.innerHTML =
+    '<div class="hint">成员：' + (members.length
+      ? escapeHtml(members.map(function (x) { return x.nick || x.id || ''; }).filter(Boolean).join('、'))
+      : '—') + '</div>' +
+    '<div class="home-sub-title">任务（' + tasks.length + '）</div>' +
+    (tasks.length
+      ? '<div class="acc-list">' + tasks.map(taskRow).join('') + '</div>'
+      : '<div class="acc-empty">暂无共享任务</div>') +
+    '<div class="home-sub-title">日程（' + events.length + '）</div>' +
+    (events.length
+      ? '<div class="acc-list">' + events.map(feedEvRow).join('') + '</div>'
+      : '<div class="acc-empty">暂无共享日程</div>');
+  mountIcons(body);
+}
+
+/* 退组：确认后 POST /api/groups/{id}/leave */
+async function leaveGroup(root, g) {
+  const ok = await confirmDialog(
+    '确定退出群组 <strong>' + escapeHtml(g.name || '') + '</strong> 吗？',
+    { title: '退出群组', danger: true, okText: '退出' }
+  );
+  if (!ok) return;
+  try {
+    await apiPost('/api/groups/' + encodeURIComponent(String(g.id)) + '/leave');
+    toast('已退出群组', 'success');
+    loadGroupsCard(root);
+  } catch (e) { /* api 层已提示 */ }
+}
+
+/* 解散：确认后 DELETE /api/groups/{id} */
+async function disbandGroup(root, g) {
+  const ok = await confirmDialog(
+    '确定解散群组 <strong>' + escapeHtml(g.name || '') + '</strong> 吗？此操作不可撤销。',
+    { title: '解散群组', danger: true, okText: '解散' }
+  );
+  if (!ok) return;
+  try {
+    await apiDel('/api/groups/' + encodeURIComponent(String(g.id)));
+    toast('群组已解散', 'success');
+    loadGroupsCard(root);
+  } catch (e) { /* api 层已提示 */ }
 }
 
 /* ============ 共享知识库（对等节点：浏览 / 检索 / 下载） ============ */

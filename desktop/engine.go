@@ -106,8 +106,24 @@ func boot(dataDir, addr, imaBase string) (*engine, error) {
 		httpSrv: &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second},
 	}
 	go peer.RunLAN(pid, ptable, apiPort, func(p peer.Peer) { pob.RetryNow(p.ID); pob.Kick() }, e.stopLan) // 发现即补投
-	go peer.RunOutbox(e.stopLan, pob, ptable, pid, apiPort, 5*time.Second)                                // 离线补投
+	stAll := st.GetSettings()
+	relayURL := strings.TrimRight(stAll.DiscoverURL, "/")
+	go peer.RunOutbox(e.stopLan, pob, ptable, pid, apiPort, 5*time.Second, relayURL) // 离线补投（直连失败走中继）
 	go srv.RunQueueDrainer(e.drain)
+	if relayURL != "" {
+		adv := []string{}
+		if v := strings.TrimSpace(stAll.PublicAddr); v != "" {
+			adv = append(adv, v)
+		}
+		go peer.RunDiscovery(e.stopLan, pid, ptable, peer.DiscoveryOpts{
+			BaseURL:    relayURL,
+			Advertised: adv,
+			LocalAddrs: func() []string { return peer.LocalAddrs(apiPort) },
+			SelfURL:    e.url,
+		})
+		go peer.TryUPnP(apiPort, e.stopLan)
+		log.Printf("公网发现已启用：%s", relayURL)
+	}
 	go func() {
 		if err := e.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP 服务异常: %v", err)

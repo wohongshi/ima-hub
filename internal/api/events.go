@@ -43,6 +43,7 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request, u *st
 		AllDay   bool   `json:"all_day"`
 		Location string `json:"location"`
 		Note     string `json:"note"`
+		GroupID  string `json:"group_id"` // 群组共享（空=本地/团队）
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -62,12 +63,13 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request, u *st
 	e, err := s.Store.AddEvent(store.Event{
 		UserID: u.ID, By: u.Username,
 		Title: req.Title, StartAt: req.StartAt, EndAt: req.EndAt,
-		AllDay: req.AllDay, Location: req.Location, Note: req.Note,
+		AllDay: req.AllDay, Location: req.Location, Note: req.Note, GroupID: req.GroupID,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	s.hookEventChanged("upsert", e) // 群组条目广播
 	writeOK(w, map[string]any{"event": e})
 }
 
@@ -122,11 +124,27 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request, u *st
 		writeBizErr(w, err.Error())
 		return
 	}
+	// 广播取 bump 后的最终态（同任务：防 LWW 判旧拒收）
+	var final store.Event
+	for _, e := range s.Store.ListEvents() {
+		if e.ID == id {
+			final = e
+		}
+	}
+	s.hookEventChanged("upsert", final) // 群组条目广播
 	writeOK(w, nil)
 }
 
 func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
+	// 先取删除前副本：群组墓碑广播需要 group_id
+	var prev store.Event
+	for _, e := range s.Store.ListEvents() {
+		if e.ID == id {
+			prev = e
+			break
+		}
+	}
 	if err := s.Store.DeleteEvent(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, 404, "日程不存在")
@@ -135,6 +153,7 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request, u *st
 		writeErr(w, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	s.hookEventDeleted(prev) // 群组删除广播（墓碑时间戳给对端 LWW）
 	writeOK(w, nil)
 }
 

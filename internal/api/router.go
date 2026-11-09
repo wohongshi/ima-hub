@@ -62,6 +62,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/access/requests", s.requireAuth(s.handleAccessList))
 	mux.HandleFunc("POST /api/access/requests", s.requireAuth(s.handleAccessCreate))
 	mux.HandleFunc("POST /api/access/requests/{id}/decide", s.requireAuth(s.handleAccessDecide))
+
+	// 群组：任务/日程共享圈（对等广播 + LWW 收敛）
+	mux.HandleFunc("GET /api/groups", s.requireAuth(s.handleGroupList))
+	mux.HandleFunc("POST /api/groups", s.requireAuth(s.handleGroupCreate))
+	mux.HandleFunc("PATCH /api/groups/{id}", s.requireAuth(s.handleGroupUpdate))
+	mux.HandleFunc("DELETE /api/groups/{id}", s.requireAuth(s.handleGroupDelete))
+	mux.HandleFunc("POST /api/groups/{id}/leave", s.requireAuth(s.handleGroupLeave))
+	mux.HandleFunc("GET /api/groups/{id}/feed", s.requireAuth(s.handleGroupFeed))
 	// 节点间 RPC（免 Cookie：信封 Ed25519 签名鉴权 + X25519 加密封载）
 	mux.HandleFunc("POST /api/peer/rpc", s.handlePeerRPC)
 

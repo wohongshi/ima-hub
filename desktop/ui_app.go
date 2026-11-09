@@ -31,6 +31,7 @@ type app struct {
 	filePath  string
 	peers     []map[string]any
 	access    []map[string]any
+	groups    []map[string]any
 	tasks     []map[string]any
 	events    []map[string]any
 	settings  map[string]any

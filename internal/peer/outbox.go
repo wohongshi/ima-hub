@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -179,10 +180,11 @@ func (o *Outbox) PendingCount() int {
 	return len(o.Msgs)
 }
 
-// RunOutbox 投递循环：到期消息 → 组信封 → HTTP 投递；对方回归自动补投。
+// RunOutbox 投递循环：到期消息 → 组信封 → HTTP 投递；直连失败且配置了发现服务器时
+// 走中继信箱回退（异步消息；kb.* 同步查询不入队不走中继）；对方回归自动补投。
 // 收到 Kick（对方上线宣告 / 新消息入队）立即穿插一轮，不等周期。
 // myPort=本方 HTTP 端口（写进信封供对方自愈地址）。
-func RunOutbox(stop <-chan struct{}, o *Outbox, t *Table, me *Identity, myPort int, tick time.Duration) {
+func RunOutbox(stop <-chan struct{}, o *Outbox, t *Table, me *Identity, myPort int, tick time.Duration, relayURL string) {
 	tk := time.NewTicker(tick)
 	defer tk.Stop()
 	for {
@@ -195,20 +197,41 @@ func RunOutbox(stop <-chan struct{}, o *Outbox, t *Table, me *Identity, myPort i
 		for _, m := range o.Due(time.Now().Unix()) {
 			p, ok := t.Get(m.To)
 			addr := PeerAddr(p)
-			if !ok || addr == "" || p.XPub == "" {
-				o.Fail(m.ID, errors.New("对方地址/密钥未知"))
-				continue
+			canSeal := ok && p.XPub != ""
+			var env Envelope
+			var err error
+			if canSeal {
+				env, err = MakeEnvelope(me, m.To, p.XPub, myPort, m.Kind, m.Payload)
+				if err != nil {
+					o.Fail(m.ID, err)
+					continue
+				}
 			}
-			env, err := MakeEnvelope(me, m.To, p.XPub, myPort, m.Kind, m.Payload)
-			if err != nil {
-				o.Fail(m.ID, err)
-				continue
+			delivered := false
+			var lastErr error
+			if canSeal && addr != "" {
+				if err := PostEnvelope(addr, env); err == nil {
+					delivered = true
+				} else {
+					lastErr = err
+				}
 			}
-			if err := PostEnvelope(addr, env); err != nil {
-				o.Fail(m.ID, err)
-			} else {
+			if !delivered && relayURL != "" && canSeal && !strings.HasPrefix(m.Kind, "kb.") {
+				// 直连失败/无地址 → 中继信箱回退（端到端密文照旧）
+				if err := relayEnvelope(relayURL, m.To, me.NodeID(), env); err == nil {
+					delivered = true
+				} else {
+					lastErr = err
+				}
+			}
+			if delivered {
 				o.Done(m.ID)
+				continue
 			}
+			if lastErr == nil {
+				lastErr = errors.New("对方地址/密钥未知")
+			}
+			o.Fail(m.ID, lastErr)
 		}
 	}
 }

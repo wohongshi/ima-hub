@@ -6,6 +6,6 @@ echo "REST 路由数:  $(grep -c 'HandleFunc' internal/api/router.go)"
 echo "测试函数数:   $(grep -rh 'func Test' internal/ --include='*_test.go' | wc -l)"
 echo "Go 代码行数:  $(find . -name '*.go' -not -path './vendor/*' -exec cat {} + | wc -l)"
 echo "前端代码行数: $(cat web/*.js web/*.css web/index.html | wc -l)"
-echo "行为探针:     probe_peer 14 + probe_kb 22 + probe_queue 15 + probe_client 13 + probe_fixes 10 = 74 项断言"
+echo "行为探针:     probe_group 9 + probe_discover 7 + probe_peer 14 + probe_kb 22 + probe_queue 15 + probe_client 13 + probe_fixes 10 = 90 项断言"
 echo "版本号:       $(grep -oP 'const Version = "\K[^"]+' internal/api/api.go)（双处一致校验：）"
 grep -oP 'serverVersion\s+=\s+"\K[^"]+' internal/mcp/mcp.go | sed 's/^/  mcp serverVersion: /'
