@@ -719,14 +719,32 @@ function renderAdminSettingsForm(box, s) {
     '  <input class="input mono" type="password" id="as-key" placeholder="' + (s.default_ima_api_key_set ? '已设置，留空不改' : '未设置') + '" autocomplete="off">' +
     '  <div class="hint">' + (s.default_ima_api_key_set ? '留空保持不变' : '未绑定凭证时使用') + '</div>' +
     '</div>' +
+    '<div class="field">' +
+    '  <div class="setting-row"><div class="lbl">教研工作台</div><div class="val" style="display:flex;align-items:center;gap:10px">' +
+    '    <label class="switch"><input type="checkbox" id="as-lab"' + (s.lab_enabled ? ' checked' : '') + '><span class="track"></span></label>' +
+    '    <span class="muted" style="font-size:12.5px">开启后 /lab 可免登录收资料</span></div></div>' +
+    '</div>' +
+    '<div class="field"><label>工作台标题</label><input class="input" id="as-lab-title" value="' + escapeHtml(s.lab_title || '') + '" placeholder="教研工作台"></div>' +
+    '<div class="field"><label>提示语</label><textarea class="input" id="as-lab-notice" rows="3" placeholder="如：本周教研请上传期中试卷分析">' + escapeHtml(s.lab_notice || '') + '</textarea></div>' +
+    '<div class="field"><label>资源链接</label><textarea class="input" id="as-lab-links" rows="4" placeholder="每行一条：名称|https://...">' + escapeHtml((s.lab_links || []).map(function (l) { return l.name + '|' + l.url; }).join('\n')) + '</textarea>' +
+    '  <div class="hint">每行一条：名称|链接（仅 http/https）</div></div>' +
     '<button class="btn primary" id="as-save">' + icon('save', 15) + '保存服务设置</button>';
 
   $('#as-save', box).addEventListener('click', async function () {
+    const links = $('#as-lab-links', box).value.split('\n').map(function (line) {
+      const i = line.indexOf('|');
+      if (i < 0) return null;
+      return { name: line.slice(0, i).trim(), url: line.slice(i + 1).trim() };
+    }).filter(function (x) { return x && x.name && x.url; });
     const body = {
       site_name: $('#as-site', box).value.trim(),
       allow_register: $('#as-register', box).checked,
       default_ima_client_id: $('#as-cid', box).value.trim(),
       default_ima_api_key: $('#as-key', box).value.trim(), // 空字符串（含纯空白）= 不改
+      lab_enabled: $('#as-lab', box).checked,
+      lab_title: $('#as-lab-title', box).value.trim(),
+      lab_notice: $('#as-lab-notice', box).value.trim(),
+      lab_links: links,
     };
     const btn = $('#as-save', box);
     btn.disabled = true;

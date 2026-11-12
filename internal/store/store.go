@@ -137,6 +137,17 @@ type Settings struct {
 	// 公网发现 + 中继（imahub discover 服务地址）；PublicAddr 为可选对外地址（公网映射后手填）
 	DiscoverURL string `json:"discover_url,omitempty"`
 	PublicAddr  string `json:"public_addr,omitempty"`
+	// 教研工作台（/lab 免登录资料收集）：开关 / 标题 / 提示语 / 资源链接
+	LabEnabled bool      `json:"lab_enabled"`
+	LabTitle   string    `json:"lab_title,omitempty"`
+	LabNotice  string    `json:"lab_notice,omitempty"`
+	LabLinks   []LabLink `json:"lab_links,omitempty"`
+}
+
+// LabLink 教研工作台的资源直达链接（如「打开 ima 知识库」）。
+type LabLink struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 type data struct {
@@ -160,6 +171,8 @@ type data struct {
 	Groups map[string]Group `json:"groups,omitempty"`
 	// Devices 免登录设备 token（单人模式「记住本机」，按 ID 索引）。
 	Devices map[string]DeviceToken `json:"devices,omitempty"`
+	// LabFiles 教研工作台收集的资料（文件体在 data/lab/）。
+	LabFiles []LabFile `json:"lab_files,omitempty"`
 }
 
 type Store struct {

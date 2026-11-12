@@ -349,6 +349,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.handleClientLogin(w, r)
 		return
 	}
+	// 登录失败限速（公网暴露防爆破）：20 次/分钟每 IP，成功即清零
+	if loginLimiter.blocked(clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, 429, "尝试太频繁，歇一分钟再来")
+		return
+	}
 	var req struct {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
@@ -361,6 +366,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if req.DeviceToken != "" {
 		u, err := s.Store.DeviceLogin(req.DeviceToken)
 		if err != nil {
+			loginLimiter.hit(clientIP(r))
 			writeErr(w, http.StatusUnauthorized, 401, "设备免登录已失效，请用密码登录")
 			return
 		}
@@ -372,11 +378,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
 			return
 		}
+		loginLimiter.reset(clientIP(r))
 		writeOK(w, map[string]any{"user": publicUser(u)})
 		return
 	}
 	u, ok := s.Store.FindUserByName(req.Username)
 	if !ok || !auth.VerifyPassword(req.Password, u.PassHash) {
+		loginLimiter.hit(clientIP(r))
 		writeErr(w, http.StatusUnauthorized, 401, "用户名或密码错误")
 		return
 	}
@@ -388,6 +396,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, 500, "会话创建失败，请重新登录")
 		return
 	}
+	loginLimiter.reset(clientIP(r))
 	writeOK(w, map[string]any{"user": publicUser(u)})
 }
 
@@ -808,6 +817,10 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request, 
 		"ask_api_key_set":         st.AskAPIKey != "",
 		"discover_url":            st.DiscoverURL,
 		"public_addr":             st.PublicAddr,
+		"lab_enabled":             st.LabEnabled,
+		"lab_title":               st.LabTitle,
+		"lab_notice":              st.LabNotice,
+		"lab_links":               st.LabLinks,
 	})
 }
 
@@ -822,6 +835,10 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, 
 		AskAPIKey          *string `json:"ask_api_key"`
 		DiscoverURL        *string `json:"discover_url"`
 		PublicAddr         *string `json:"public_addr"`
+		LabEnabled         *bool   `json:"lab_enabled"`
+		LabTitle           *string `json:"lab_title"`
+		LabNotice          *string `json:"lab_notice"`
+		LabLinks           []store.LabLink `json:"lab_links"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -853,6 +870,28 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, 
 		}
 		if req.PublicAddr != nil {
 			st.PublicAddr = strings.TrimSpace(*req.PublicAddr)
+		}
+		if req.LabEnabled != nil {
+			st.LabEnabled = *req.LabEnabled
+		}
+		if req.LabTitle != nil {
+			st.LabTitle = strings.TrimSpace(*req.LabTitle)
+		}
+		if req.LabNotice != nil {
+			st.LabNotice = strings.TrimSpace(*req.LabNotice)
+		}
+		if req.LabLinks != nil {
+			// 净化：空项丢弃，链接仅收 http(s)（防 javascript: 伪协议进公开页）
+			links := []store.LabLink{}
+			for _, l := range req.LabLinks {
+				name := strings.TrimSpace(l.Name)
+				u := strings.TrimSpace(l.URL)
+				if name == "" || u == "" || !(strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
+					continue
+				}
+				links = append(links, store.LabLink{Name: name, URL: u})
+			}
+			st.LabLinks = links
 		}
 		return nil
 	})

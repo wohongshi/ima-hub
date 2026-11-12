@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教研工作台</title>
+<style>
+/* 与「化学实验演示工作台」同一家族：暖纸底 + 深青主色 + 琥珀提示 */
+:root{
+  --paper:#f4f2ec; --panel:#ffffff; --ink:#22282e; --muted:#6b7280; --line:#e3dfd4;
+  --accent:#15616d; --accent-soft:#e2eef0; --amber:#c26a1e; --amber-soft:#fdf3e4;
+  --danger:#c2382e; --ok:#2e7d4f; --radius:14px; --shadow:0 2px 10px rgba(34,40,46,.07);
+  --serif:"Songti SC","STSong","SimSun",serif;
+  --sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",sans-serif;
+}
+*{box-sizing:border-box; margin:0; padding:0}
+html{font-size:16px}
+body{background:var(--paper); color:var(--ink); font-family:var(--sans); min-height:100vh; display:flex; flex-direction:column}
+
+header{background:#12333a; color:#f2f6f6; padding:16px 22px}
+header h1{font-family:var(--serif); font-size:24px; letter-spacing:1px}
+header .sub{font-size:12.5px; opacity:.75; margin-top:3px}
+
+main{flex:1; padding:16px 22px 20px; display:flex; flex-direction:column; gap:14px; max-width:1080px; width:100%; margin:0 auto}
+
+/* 提示条：老师的“提示大家上传文件”，醒目第一位 */
+.notice{
+  background:var(--amber-soft); border:1px solid #ecd9b8; border-left:6px solid var(--amber);
+  border-radius:var(--radius); padding:16px 18px; font-size:18px; line-height:1.6; font-weight:600;
+  white-space:pre-wrap; word-break:break-word;
+}
+.notice:empty{display:none}
+
+.grid{display:grid; grid-template-columns:minmax(0,1.5fr) minmax(280px,1fr); gap:14px; align-items:start}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px}
+.card h2{font-size:15px; color:var(--accent); margin-bottom:12px; letter-spacing:.5px}
+
+/* 上传区 */
+.drop{
+  border:2px dashed var(--accent); border-radius:12px; background:var(--accent-soft);
+  padding:30px 18px; text-align:center; cursor:pointer; transition:all .15s;
+}
+.drop:hover,.drop.over{background:#d2e5e9}
+.drop .big{font-size:19px; font-weight:700; color:var(--accent)}
+.drop .small{font-size:13px; color:var(--muted); margin-top:6px}
+.by-row{display:flex; gap:10px; align-items:center; margin:12px 0 4px; flex-wrap:wrap}
+.by-row label{font-size:14px; font-weight:600}
+.by-row input{flex:1; min-width:160px; min-height:44px; font-size:15px; padding:8px 12px; border:1px solid var(--line); border-radius:10px; font-family:var(--sans)}
+.up-item{display:flex; align-items:center; gap:10px; margin-top:10px; font-size:13.5px}
+.up-item .name{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.bar{height:8px; border-radius:6px; background:var(--line); overflow:hidden; margin-top:8px}
+.bar i{display:block; height:100%; width:0; background:var(--accent); transition:width .12s}
+
+/* 资料列表 */
+.file-row{display:flex; align-items:center; gap:12px; padding:12px 4px; border-bottom:1px solid var(--line)}
+.file-row:last-child{border-bottom:0}
+.file-row .meta{flex:1; min-width:0}
+.file-row .nm{font-size:15px; font-weight:600; word-break:break-all; line-height:1.45; max-height:2.9em; overflow:hidden}
+.file-row .sub{font-size:12.5px; color:var(--muted); margin-top:3px}
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:0 18px;
+  font-size:15px; font-family:var(--sans); font-weight:600; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer; text-decoration:none; transition:all .15s;
+}
+.btn:hover{border-color:var(--accent); color:var(--accent)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.primary:hover{background:#12525c; color:#fff}
+.btn.danger{color:var(--danger); border-color:#e7c2be}
+.btn.sm{min-height:36px; padding:0 12px; font-size:13.5px}
+
+/* 资源链接 */
+.link-card{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  border:1px solid var(--line); border-radius:11px; padding:13px 15px; margin-bottom:10px;
+  font-size:15px; font-weight:600; text-decoration:none; color:var(--ink);
+}
+.link-card:hover{border-color:var(--accent); background:var(--accent-soft)}
+.link-card .arr{color:var(--accent); font-size:18px}
+
+.empty{text-align:center; color:var(--muted); padding:26px 10px; font-size:14px}
+.hint{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.7}
+.disabled-mask{display:none}
+body.disabled .upload-zone{display:none}
+body.disabled .disabled-mask{display:block; text-align:center; padding:24px; color:var(--muted); font-size:15px}
+
+footer{padding:10px 22px 18px; font-size:12px; color:var(--muted); text-align:center}
+
+@media (max-width: 980px){
+  main{padding:12px 12px 24px}
+  .grid{grid-template-columns:1fr}
+  header{padding:14px}
+  header h1{font-size:20px}
+  .notice{font-size:16px}
+  .btn.sm{min-height:44px; padding:0 16px} /* 触控目标 */
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="page-title">教研工作台</h1>
+  <div class="sub">资料收集 · 免登录 · 打开即用</div>
+</header>
+
+<main>
+  <div class="notice" id="notice"></div>
+
+  <div class="grid">
+    <section>
+      <div class="card upload-zone">
+        <h2>上传资料</h2>
+        <div class="drop" id="drop">
+          <div class="big">点这里选文件，或直接拖进来</div>
+          <div class="small" id="drop-sub">支持多选，单个 ≤ 100MB</div>
+        </div>
+        <input type="file" id="file-input" multiple hidden>
+        <div class="by-row">
+          <label for="by">你的名字</label>
+          <input id="by" maxlength="24" placeholder="选填，方便老师统计" autocomplete="off">
+        </div>
+        <div id="uploads"></div>
+      </div>
+      <div class="disabled-mask">工作台暂未开放上传。</div>
+
+      <div class="card" style="margin-top:14px">
+        <h2>已收资料 <button class="btn sm" id="refresh" style="float:right">刷新</button></h2>
+        <div id="files"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <aside>
+      <div class="card">
+        <h2>常用入口</h2>
+        <div id="links"><div class="empty">暂无链接</div></div>
+      </div>
+      <div class="card">
+        <h2>使用说明</h2>
+        <details>
+          <summary style="cursor:pointer; font-weight:600; color:var(--accent)">展开</summary>
+          <div class="hint">
+            1. 打开本网页 → 拖入文件 → 完成。<br>
+            2. 传错了请告诉老师删除。<br>
+            3. 本页收藏到手机，下次直接打开。
+          </div>
+        </details>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<footer>教研工作台 · 网页版免安装 · 传资料不装任何软件</footer>
+
+<script>
+"use strict";
+/* 教研工作台前端：零依赖；所有远端字符串一律转义（公开页防注入）。 */
+const $ = (id) => document.getElementById(id);
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+function humanSize(n){
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+function fmtTime(ts){
+  const d = new Date(ts * 1000);
+  const p = (x) => String(x).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
+let isAdmin = false;
+
+async function loadInfo(){
+  try {
+    const r = await fetch("/api/lab/info");
+    const j = await r.json();
+    if (j.code !== 0) return;
+    const d = j.data || {};
+    document.title = d.title || "教研工作台";
+    $("page-title").textContent = d.title || "教研工作台";
+    $("notice").textContent = d.notice || "";
+    if (d.max_mb) $("drop-sub").textContent = "支持多选，单个 ≤ " + d.max_mb + "MB";
+    document.body.classList.toggle("disabled", !d.enabled);
+    const links = d.links || [];
+    $("links").innerHTML = links.length
+      ? links.map((l) =>
+          '<a class="link-card" href="' + esc(l.url) + '" target="_blank" rel="noopener">' +
+          "<span>" + esc(l.name) + '</span><span class="arr">→</span></a>').join("")
+      : '<div class="empty">暂无链接</div>';
+  } catch (e) { /* 网络抖动不打扰 */ }
+}
+
+async function loadFiles(){
+  const box = $("files");
+  try {
+    const r = await fetch("/api/lab/files");
+    const j = await r.json();
+    if (j.code !== 0) { box.innerHTML = '<div class="empty">加载失败，点刷新重试</div>'; return; }
+    const items = j.data.files || [];
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有资料，等你来传第一份</div>'; return; }
+    box.innerHTML = items.map((f) =>
+      '<div class="file-row">' +
+      '<div class="meta"><div class="nm">' + esc(f.name) + "</div>" +
+      '<div class="sub">' + esc(f.by || "匿名") + " · " + humanSize(f.size) + " · " + fmtTime(f.created_at) + "</div></div>" +
+      '<a class="btn sm" href="/api/lab/file?id=' + encodeURIComponent(f.id) + '">下载</a>' +
+      (isAdmin ? '<button class="btn sm danger" data-del="' + esc(f.id) + '">删除</button>' : "") +
+      "</div>").join("");
+    box.querySelectorAll("[data-del]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (!confirm("删除这份资料？")) return;
+        try {
+          await fetch("/api/lab/file?id=" + encodeURIComponent(b.getAttribute("data-del")), { method: "DELETE" });
+          loadFiles();
+        } catch (e) {}
+      });
+    });
+  } catch (e) {
+    box.innerHTML = '<div class="empty">加载失败，点刷新重试</div>';
+  }
+}
+
+/* ---------- 上传（XHR 拿进度） ---------- */
+function uploadOne(file, by, slot){
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/lab/upload");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        slot.bar.style.width = Math.round(e.loaded / e.total * 100) + "%";
+      }
+    };
+    xhr.onload = () => {
+      let ok = false, msg = "";
+      try {
+        const j = JSON.parse(xhr.responseText);
+        ok = j.code === 0;
+        msg = j.msg || "";
+      } catch (e) { msg = "响应异常"; }
+      slot.bar.style.width = "100%";
+      slot.bar.style.background = ok ? "var(--ok)" : "var(--danger)";
+      slot.msg.textContent = ok ? "已上传 ✓" : ("失败：" + msg);
+      resolve(ok);
+    };
+    xhr.onerror = () => {
+      slot.bar.style.background = "var(--danger)";
+      slot.msg.textContent = "网络错误，请重试";
+      resolve(false);
+    };
+    const fd = new FormData();
+    fd.append("file", file);
+    if (by) fd.append("by", by);
+    xhr.send(fd);
+  });
+}
+
+async function uploadFiles(files){
+  const by = $("by").value.trim();
+  const box = $("uploads");
+  let any = false;
+  for (const f of files) {
+    const row = document.createElement("div");
+    row.className = "up-item";
+    row.innerHTML = '<span class="name"></span><span class="msg" style="color:var(--muted)">上传中…</span>' +
+      '<div class="bar" style="width:100%"><i></i></div>';
+    row.querySelector(".name").textContent = f.name;
+    /* name 走 textContent；结构行不含远端字符串 */
+    row.style.flexWrap = "wrap";
+    box.appendChild(row);
+    const slot = { bar: row.querySelector(".bar i"), msg: row.querySelector(".msg") };
+    const ok = await uploadOne(f, by, slot);
+    any = any || ok;
+  }
+  if (any) loadFiles();
+}
+
+$("drop").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", (e) => {
+  if (e.target.files.length) uploadFiles([...e.target.files]);
+  e.target.value = "";
+});
+["dragover", "dragenter"].forEach((ev) => $("drop").addEventListener(ev, (e) => {
+  e.preventDefault();
+  $("drop").classList.add("over");
+}));
+["dragleave", "drop"].forEach((ev) => $("drop").addEventListener(ev, (e) => {
+  e.preventDefault();
+  $("drop").classList.remove("over");
+}));
+$("drop").addEventListener("drop", (e) => {
+  if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
+});
+$("refresh").addEventListener("click", loadFiles);
+
+/* 管理员探测（静默）：登录态才显示删除按钮 */
+(async () => {
+  try {
+    const r = await fetch("/api/me", { credentials: "same-origin" });
+    const j = await r.json();
+    isAdmin = !!(j.code === 0 && j.data && j.data.user && j.data.user.role === "admin");
+  } catch (e) { isAdmin = false; }
+  loadInfo().then(loadFiles);
+})();
+</script>
+</body>
+</html>
