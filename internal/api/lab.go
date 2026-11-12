@@ -104,6 +104,19 @@ func (s *Server) labDir() string {
 	return filepath.Join(filepath.Dir(s.TmpDir), "lab")
 }
 
+// writeLabBlob 落文件体（MCP/REST 共用）。
+func writeLabBlob(dir, id string, raw []byte) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, id), raw, 0o644)
+}
+
+// readLabBlob 读文件体。
+func readLabBlob(dir, id string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(dir, id))
+}
+
 // handleLabInfo GET /api/lab/info 工作台配置（公开）。
 func (s *Server) handleLabInfo(w http.ResponseWriter, r *http.Request) {
 	st := s.Store.GetSettings()

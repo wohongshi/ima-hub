@@ -149,6 +149,9 @@ func main() {
 	mux.Handle("/mcp", srv.MCP)
 	mux.Handle("/mcp/", srv.MCP) // 带尾斜杠别落到 SPA
 	mux.Handle("/healthz", srv.Handler())
+	mux.Handle("/lab", srv.Handler())     // 教研工作台入口（302 → lab.html）
+	mux.Handle("/lab/", srv.Handler())    // 含 /lab/mcp 及尾斜杠变体，别落到 SPA
+	mux.Handle("/lab/mcp", srv.Handler()) // 教研工作台 MCP（WorkBuddy 直连）
 
 	// 静态 WebUI（内嵌），SPA 回退到 index.html
 	mux.Handle("/", web.SPAHandler())

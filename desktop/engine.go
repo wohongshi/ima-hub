@@ -96,6 +96,9 @@ func boot(dataDir, addr, imaBase string) (*engine, error) {
 	mux.Handle("/mcp", srv.MCP)
 	mux.Handle("/mcp/", srv.MCP)
 	mux.Handle("/healthz", srv.Handler())
+	mux.Handle("/lab", srv.Handler())
+	mux.Handle("/lab/", srv.Handler())
+	mux.Handle("/lab/mcp", srv.Handler())
 	mux.Handle("/", web.SPAHandler())
 
 	e := &engine{

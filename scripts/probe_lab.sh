@@ -121,6 +121,44 @@ assert d.get('code')!=0 and '频繁' in d.get('msg',''), d" 2>/dev/null && { GOT
 done
 [ -n "$GOT429" ] && ok "登录失败限速生效" || bad "登录限速未触发"
 
+echo "== MCP 端点（WorkBuddy 直连） =="
+R=$(curl -s -X POST $BASE/lab/mcp -H 'Content-Type: application/json' --data-raw '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
+echo "$R" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['result']['protocolVersion']=='2025-06-18' and d['result']['serverInfo']['name']=='jiaoyan-lab', d" 2>/dev/null \
+  && ok "MCP initialize" || bad "MCP initialize 异常: $R"
+R=$(curl -s -X POST $BASE/lab/mcp -H 'Content-Type: application/json' --data-raw '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+echo "$R" | python3 -c "
+import json,sys
+tools=json.load(sys.stdin)['result']['tools']
+names=sorted(t['name'] for t in tools)
+assert names==['lab_download','lab_files','lab_info','lab_upload'], names" 2>/dev/null \
+  && ok "MCP tools/list 四工具" || bad "MCP 工具清单异常: $R"
+B64=$(printf 'mcp 上传内容' | base64 -w0)
+R=$(curl -s -X POST $BASE/lab/mcp -H 'Content-Type: application/json' -H 'X-Forwarded-For: 10.9.8.7' --data-raw "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"lab_upload\",\"arguments\":{\"filename\":\"MCP来稿.docx\",\"content_base64\":\"$B64\",\"by\":\"MCP老师\"}}}")
+echo "$R" | python3 -c "
+import json,sys
+t=json.load(sys.stdin)['result']['content'][0]['text']
+d=json.loads(t)
+assert d['name']=='MCP来稿.docx' and d['id'], d" 2>/dev/null \
+  && ok "MCP 上传" || bad "MCP 上传异常: $R"
+MID=$(echo "$R" | python3 -c "import json,sys;print(json.loads(json.load(sys.stdin)['result']['content'][0]['text'])['id'])")
+R=$(curl -s -X POST $BASE/lab/mcp -H 'Content-Type: application/json' --data-raw '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lab_files","arguments":{}}}')
+echo "$R" | python3 -c "
+import json,sys
+t=json.load(sys.stdin)['result']['content'][0]['text']
+fs=json.loads(t)['files']
+assert any(f['name']=='MCP来稿.docx' and f['by']=='MCP老师' for f in fs), fs" 2>/dev/null \
+  && ok "MCP 清单可见" || bad "MCP 清单异常: $R"
+R=$(curl -s -X POST $BASE/lab/mcp -H 'Content-Type: application/json' --data-raw "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"lab_download\",\"arguments\":{\"id\":\"$MID\"}}}")
+echo "$R" | python3 -c "
+import json,sys,base64
+t=json.load(sys.stdin)['result']['content'][0]['text']
+d=json.loads(t)
+assert base64.b64decode(d['content_base64'])=='mcp 上传内容'.encode(), d" 2>/dev/null \
+  && ok "MCP 下载字节一致" || bad "MCP 下载异常: $R"
+
 P=$(grep -c '^P$' "$CNT" 2>/dev/null); F=$(grep -c '^F$' "$CNT" 2>/dev/null)
 echo
 echo "probe_lab: ${P:-0} 通过 / ${F:-0} 失败"

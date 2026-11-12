@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/lab/files", s.handleLabFiles)
 	mux.HandleFunc("GET /api/lab/file", s.handleLabDownload)
 	mux.HandleFunc("DELETE /api/lab/file", s.requireAdmin(s.handleLabDelete))
+	mux.HandleFunc("POST /lab/mcp", s.handleLabMCP) // MCP 端点（WorkBuddy 等客户端直连）
 
 	// 离线同步（客户端）：改动回传 + 团队数据/分发 key 拉取
 	mux.HandleFunc("POST /api/sync/push", s.requireAuth(s.handleSyncPush))
