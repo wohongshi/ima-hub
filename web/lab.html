@@ -133,6 +133,7 @@ footer{padding:10px 22px 18px; font-size:12px; color:var(--muted); text-align:ce
         <h2>常用入口</h2>
         <div id="links"><div class="empty">暂无链接</div></div>
       </div>
+      <div class="card" id="manage-card" style="display:none"></div>
       <div class="card">
         <h2>使用说明</h2>
         <details>
@@ -171,6 +172,18 @@ function fmtTime(ts){
 }
 
 let isAdmin = false;
+let infoManage = false;
+
+/* 管理密钥：带 ?k= 进来即记住（免登录管理），之后请求带 X-Manage-Key */
+(function () {
+  const k = new URLSearchParams(location.search).get('k');
+  if (k) {
+    localStorage.setItem('lab_mkey', k);
+    history.replaceState(null, '', location.pathname);
+  }
+})();
+function manageKey(){ return localStorage.getItem('lab_mkey') || ''; }
+function canManage(){ return isAdmin || !!manageKey(); }
 
 async function loadInfo(){
   try {
@@ -189,7 +202,72 @@ async function loadInfo(){
           '<a class="link-card" href="' + esc(l.url) + '" target="_blank" rel="noopener">' +
           "<span>" + esc(l.name) + '</span><span class="arr">→</span></a>').join("")
       : '<div class="empty">暂无链接</div>';
+    infoManage = !!d.manage;
+    renderManageCard(d);
   } catch (e) { /* 网络抖动不打扰 */ }
+}
+
+/* 管理面板：持管理密钥（?k= 进来或手动粘贴）即可改提示语/链接，无需登录 */
+function renderManageCard(d){
+  const box = $("manage-card");
+  if (!box) return;
+  if (!canManage()) {
+    /* 有密钥但本机没存 → 给个解锁入口 */
+    box.style.display = infoManage ? 'block' : 'none';
+    if (infoManage) {
+      box.innerHTML = '<h2>管理</h2><div class="hint">有管理链接？' +
+        '<button class="btn sm" id="mg-unlock">粘贴密钥解锁</button></div>';
+      const b = $("mg-unlock");
+      if (b) b.addEventListener('click', () => {
+        const k = prompt('粘贴管理密钥（链接里 k= 后面那串）');
+        if (k && k.trim()) { localStorage.setItem('lab_mkey', k.trim()); location.reload(); }
+      });
+    }
+    return;
+  }
+  box.style.display = 'block';
+  const links = (d && d.links || []).map((l) => l.name + '|' + l.url).join('\n');
+  box.innerHTML =
+    '<h2>管理</h2>' +
+    '<div class="by-row"><label for="mg-title">标题</label>' +
+    '<input id="mg-title" maxlength="30" value="' + esc((d && d.title) || '') + '"></div>' +
+    '<div class="by-row" style="align-items:flex-start"><label for="mg-notice">提示语</label>' +
+    '<textarea id="mg-notice" rows="3" style="flex:1;min-width:160px;font-family:var(--sans);font-size:14px;padding:8px 12px;border:1px solid var(--line);border-radius:10px">' + esc((d && d.notice) || '') + '</textarea></div>' +
+    '<div class="by-row" style="align-items:flex-start"><label for="mg-links">资源链接</label>' +
+    '<textarea id="mg-links" rows="3" placeholder="每行一条：名称|链接" style="flex:1;min-width:160px;font-family:var(--sans);font-size:13px;padding:8px 12px;border:1px solid var(--line);border-radius:10px">' + esc(links) + '</textarea></div>' +
+    '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">' +
+    '<button class="btn primary" id="mg-save">保存</button>' +
+    '<button class="btn sm" id="mg-forget">退出管理</button></div>' +
+    '<div class="hint">管理链接=钥匙，别转发到群里；丢了在服务器重跑 lab-init 可换新钥。</div>';
+  $("mg-save").addEventListener('click', async () => {
+    const linkLines = $("mg-links").value.split('\n').map((line) => {
+      const i = line.indexOf('|');
+      if (i < 0) return null;
+      return { name: line.slice(0, i).trim(), url: line.slice(i + 1).trim() };
+    }).filter((x) => x && x.name && x.url);
+    const body = {
+      lab_title: $("mg-title").value.trim(),
+      lab_notice: $("mg-notice").value.trim(),
+      lab_links: linkLines,
+    };
+    const btn = $("mg-save");
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const r = await fetch('/api/lab/manage/config', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, manageKey() ? { 'X-Manage-Key': manageKey() } : {}),
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      btn.textContent = j.code === 0 ? '已保存 ✓' : ('失败：' + (j.msg || ''));
+      if (j.code === 0) { loadInfo().then(loadFiles); }
+    } catch (e) { btn.textContent = '网络错误'; }
+    btn.disabled = false;
+  });
+  $("mg-forget").addEventListener('click', () => {
+    localStorage.removeItem('lab_mkey');
+    location.reload();
+  });
 }
 
 async function loadFiles(){
@@ -205,13 +283,16 @@ async function loadFiles(){
       '<div class="meta"><div class="nm">' + esc(f.name) + "</div>" +
       '<div class="sub">' + esc(f.by || "匿名") + " · " + humanSize(f.size) + " · " + fmtTime(f.created_at) + "</div></div>" +
       '<a class="btn sm" href="/api/lab/file?id=' + encodeURIComponent(f.id) + '">下载</a>' +
-      (isAdmin ? '<button class="btn sm danger" data-del="' + esc(f.id) + '">删除</button>' : "") +
+      (canManage() ? '<button class="btn sm danger" data-del="' + esc(f.id) + '">删除</button>' : "") +
       "</div>").join("");
     box.querySelectorAll("[data-del]").forEach((b) => {
       b.addEventListener("click", async () => {
         if (!confirm("删除这份资料？")) return;
         try {
-          await fetch("/api/lab/file?id=" + encodeURIComponent(b.getAttribute("data-del")), { method: "DELETE" });
+          await fetch("/api/lab/file?id=" + encodeURIComponent(b.getAttribute("data-del")), {
+            method: "DELETE",
+            headers: manageKey() ? { "X-Manage-Key": manageKey() } : {},
+          });
           loadFiles();
         } catch (e) {}
       });

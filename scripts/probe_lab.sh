@@ -159,6 +159,54 @@ d=json.loads(t)
 assert base64.b64decode(d['content_base64'])=='mcp 上传内容'.encode(), d" 2>/dev/null \
   && ok "MCP 下载字节一致" || bad "MCP 下载异常: $R"
 
+echo "== 免账号管理（管理密钥，无需登录） =="
+R=$(curl -s -b /tmp/ihlab.jar -X POST $BASE/api/lab/manage/config -H 'Content-Type: application/json' --data-raw '{"lab_manage_key":"probe-key-123"}')
+echo "$R" | jassert 'assert d["data"]["lab_title"] is not None, d' "管理员可设管理密钥"
+R=$(curl -s $BASE/api/lab/info)
+echo "$R" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+assert d['manage']==True, d" 2>/dev/null && ok "info 标记 manage" || bad "info.manage 异常: $R"
+R=$(curl -s -X POST $BASE/api/lab/manage/config -H 'Content-Type: application/json' --data-raw '{"lab_title":"x"}')
+echo "$R" | jerr "管理密钥" "无密钥拒管理"
+R=$(curl -s -X POST "$BASE/api/lab/manage/config?k=wrong-key" -H 'Content-Type: application/json' --data-raw '{"lab_title":"x"}')
+echo "$R" | jerr "管理密钥" "错密钥拒管理"
+R=$(curl -s -X POST "$BASE/api/lab/manage/config?k=probe-key-123" -H 'Content-Type: application/json' --data-raw '{"lab_title":"免账号标题","lab_notice":"新提示语","lab_links":[{"name":"百度","url":"https://baidu.com"},{"name":"恶","url":"javascript:alert(1)"}]}')
+echo "$R" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+assert d['lab_title']=='免账号标题' and len(d['lab_links'])==1, d" 2>/dev/null \
+  && ok "密钥免登录改配置（javascript: 仍被滤）" || bad "密钥改配置异常: $R"
+R=$(curl -s -X POST $BASE/api/lab/upload -F "file=@/tmp/ihlab-a.bin;filename=待删文件.bin" -F "by=测试" -H 'X-Forwarded-For: 10.9.8.8')
+DID=$(echo "$R" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+R=$(curl -s -X DELETE "$BASE/api/lab/file?id=$DID" -H 'X-Manage-Key: probe-key-123')
+echo "$R" | jassert 'assert d.get("code")==0, d' "密钥免登录删文件"
+R=$(curl -s -X POST $BASE/api/lab/manage/config -H 'X-Manage-Key: probe-key-123' -H 'Content-Type: application/json' --data-raw '{"lab_manage_key":"probe-key-456"}')
+echo "$R" | jassert 'assert d.get("code")==0, d' "密钥可自换新钥"
+R=$(curl -s -X POST $BASE/api/lab/manage/config -H 'X-Manage-Key: probe-key-123' -H 'Content-Type: application/json' --data-raw '{"lab_title":"x"}')
+echo "$R" | jerr "管理密钥" "旧钥换后即废"
+
+echo "== 无账号实例：lab-init 直达教研页（二实例 18206） =="
+ND=/tmp/ihlab-node
+rm -rf "$ND"; mkdir -p "$ND"
+INIT=$("$BIN" lab-init --data "$ND" --title "免账号站" --notice "来传资料" --links "开卷面|https://ima.qq.com" 2>&1)
+NKEY=$(echo "$INIT" | sed -n 's/.*管理密钥: //p' | head -1)
+[ -n "$NKEY" ] && ok "lab-init 出密钥（无任何账号）" || bad "lab-init 无密钥: $INIT"
+"$BIN" serve --addr 127.0.0.1:18206 --data "$ND" > /tmp/ihlab-node.log 2>&1 &
+NP=$!
+for _ in $(seq 1 20); do curl -s --max-time 1 http://127.0.0.1:18206/healthz 2>/dev/null | grep -q '"ok":true' && break; sleep 0.5; done
+LOC=$(curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1:18206/)
+echo "$LOC" | grep -q '/lab' && ok "根路径直达 /lab（免登录）" || bad "根路径未直达: $LOC"
+R=$(curl -s http://127.0.0.1:18206/api/lab/info)
+echo "$R" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+assert d['enabled']==True and d['title']=='免账号站' and d['manage']==True, d" 2>/dev/null \
+  && ok "lab-init 配置落库" || bad "lab-init 配置异常: $R"
+R=$(curl -s -X POST "http://127.0.0.1:18206/api/lab/manage/config?k=$NKEY" -H 'Content-Type: application/json' --data-raw '{"lab_notice":"改好了"}')
+echo "$R" | jassert 'assert d["data"]["lab_notice"]=="改好了", d' "密钥直管（全程无账号）"
+kill "$NP" 2>/dev/null; wait "$NP" 2>/dev/null; rm -rf "$ND"
+
 P=$(grep -c '^P$' "$CNT" 2>/dev/null); F=$(grep -c '^F$' "$CNT" 2>/dev/null)
 echo
 echo "probe_lab: ${P:-0} 通过 / ${F:-0} 失败"

@@ -43,7 +43,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/lab/upload", s.handleLabUpload)
 	mux.HandleFunc("GET /api/lab/files", s.handleLabFiles)
 	mux.HandleFunc("GET /api/lab/file", s.handleLabDownload)
-	mux.HandleFunc("DELETE /api/lab/file", s.requireAdmin(s.handleLabDelete))
+	mux.HandleFunc("DELETE /api/lab/file", s.handleLabDelete) // 管理密钥 或 管理员
+	mux.HandleFunc("POST /api/lab/manage/config", s.handleLabManageConfig) // 免登录管理（持密钥）
 	mux.HandleFunc("POST /lab/mcp", s.handleLabMCP) // MCP 端点（WorkBuddy 等客户端直连）
 
 	// 离线同步（客户端）：改动回传 + 团队数据/分发 key 拉取

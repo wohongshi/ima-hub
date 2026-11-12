@@ -5,6 +5,7 @@ package api
 // 公开接口全部限速限大；删除仅管理员。
 
 import (
+	"crypto/subtle"
 	"io"
 	"net"
 	"net/http"
@@ -117,6 +118,84 @@ func readLabBlob(dir, id string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(dir, id))
 }
 
+// labManageKeyOK 免账号管理鉴权：管理密钥（头 X-Manage-Key 或查询 ?k=）。
+func (s *Server) labManageKeyOK(r *http.Request) bool {
+	key := r.Header.Get("X-Manage-Key")
+	if key == "" {
+		key = r.URL.Query().Get("k")
+	}
+	want := s.Store.GetSettings().LabManageKey
+	if key == "" || want == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(key), []byte(want)) == 1
+}
+
+// labManageAuth 教研管理双通道：管理密钥 或 已登录管理员。免账号模式走密钥，无需任何账号。
+func (s *Server) labManageAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.labManageKeyOK(r) {
+		return true
+	}
+	if u, ok := s.authUser(r); ok && u.Role == "admin" {
+		return true
+	}
+	writeErr(w, http.StatusUnauthorized, 401, "需要管理密钥")
+	return false
+}
+
+// handleLabManageConfig POST /api/lab/manage/config 免登录改教研配置（持管理密钥即可）。
+func (s *Server) handleLabManageConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.labManageAuth(w, r) {
+		return
+	}
+	var req struct {
+		LabEnabled    *bool           `json:"lab_enabled"`
+		LabTitle      *string         `json:"lab_title"`
+		LabNotice     *string         `json:"lab_notice"`
+		LabLinks      []store.LabLink `json:"lab_links"`
+		LabManageKey  *string         `json:"lab_manage_key"` // 持有旧密钥可自换新钥
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	err := s.Store.UpdateSettings(func(st *store.Settings) error {
+		if req.LabEnabled != nil {
+			st.LabEnabled = *req.LabEnabled
+		}
+		if req.LabTitle != nil {
+			st.LabTitle = strings.TrimSpace(*req.LabTitle)
+		}
+		if req.LabNotice != nil {
+			st.LabNotice = strings.TrimSpace(*req.LabNotice)
+		}
+		if req.LabLinks != nil {
+			links := []store.LabLink{}
+			for _, l := range req.LabLinks {
+				name := strings.TrimSpace(l.Name)
+				u := strings.TrimSpace(l.URL)
+				if name == "" || u == "" || !(strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
+					continue
+				}
+				links = append(links, store.LabLink{Name: name, URL: u})
+			}
+			st.LabLinks = links
+		}
+		if req.LabManageKey != nil && strings.TrimSpace(*req.LabManageKey) != "" {
+			st.LabManageKey = strings.TrimSpace(*req.LabManageKey)
+		}
+		return nil
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	st := s.Store.GetSettings()
+	writeOK(w, map[string]any{
+		"lab_enabled": st.LabEnabled, "lab_title": st.LabTitle,
+		"lab_notice": st.LabNotice, "lab_links": st.LabLinks,
+	})
+}
+
 // handleLabInfo GET /api/lab/info 工作台配置（公开）。
 func (s *Server) handleLabInfo(w http.ResponseWriter, r *http.Request) {
 	st := s.Store.GetSettings()
@@ -134,6 +213,7 @@ func (s *Server) handleLabInfo(w http.ResponseWriter, r *http.Request) {
 		"notice":  st.LabNotice,
 		"links":   links,
 		"max_mb":  labMaxBytes >> 20,
+		"manage":  st.LabManageKey != "",
 	})
 }
 
@@ -228,19 +308,20 @@ func (s *Server) handleLabDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.labDir(), id))
 }
 
-// handleLabDelete DELETE /api/lab/file?id= 删除（仅管理员）。
-func (s *Server) handleLabDelete(w http.ResponseWriter, r *http.Request, u *store.User) {
+// handleLabDelete DELETE /api/lab/file?id= 删除（管理密钥 或 管理员）。
+func (s *Server) handleLabDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.labManageAuth(w, r) {
+		return
+	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if id == "" || strings.ContainsAny(id, "/\\.") {
 		writeErr(w, http.StatusNotFound, 404, "文件不存在")
 		return
 	}
-	old, err := s.Store.LabDelete(id)
-	if err != nil {
+	if _, err := s.Store.LabDelete(id); err != nil {
 		writeErr(w, http.StatusNotFound, 404, "文件不存在")
 		return
 	}
-	_ = old
 	_ = os.Remove(filepath.Join(s.labDir(), id))
 	writeOK(w, nil)
 }

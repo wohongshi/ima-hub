@@ -29,7 +29,7 @@ func main() {
 	// 双模式：imahub serve（默认，全功能服务端）| imahub client（组员客户端：直连 + 离线同步）
 	mode := "serve"
 	args := os.Args[1:]
-	if len(args) > 0 && (args[0] == "client" || args[0] == "serve" || args[0] == "discover") {
+	if len(args) > 0 && (args[0] == "client" || args[0] == "serve" || args[0] == "discover" || args[0] == "lab-init") {
 		mode = args[0]
 		args = args[1:]
 	}
@@ -39,6 +39,55 @@ func main() {
 		daddr := fl.String("addr", ":8443", "监听地址（公网部署建议挂 HTTPS 反代）")
 		fl.Parse(args)
 		log.Fatal(discover.New().Run(*daddr))
+	}
+	if mode == "lab-init" {
+		// 教研工作台免账号初始化：写配置 + 生成管理密钥（部署脚本一次成型，无需任何账号）
+		fl := flag.NewFlagSet("imahub-lab-init", flag.ExitOnError)
+		ldata := fl.String("data", "./data", "数据目录（与 serve 的 --data 一致）")
+		ltitle := fl.String("title", "", "工作台标题（留空不动）")
+		lnotice := fl.String("notice", "", "提示语（留空不动）")
+		llinks := fl.String("links", "", "资源链接：名称|链接;名称|链接（留空不动）")
+		lkey := fl.String("key", "", "管理密钥（留空则自动生成/保持原值）")
+		fl.Parse(args)
+		st, err := store.Open(*ldata)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := st.UpdateSettings(func(s *store.Settings) error {
+			s.LabEnabled = true
+			if *ltitle != "" {
+				s.LabTitle = strings.TrimSpace(*ltitle)
+			}
+			if *lnotice != "" {
+				s.LabNotice = *lnotice
+			}
+			if *llinks != "" {
+				links := []store.LabLink{}
+				for _, seg := range strings.Split(*llinks, ";") {
+					if i := strings.Index(seg, "|"); i > 0 {
+						name := strings.TrimSpace(seg[:i])
+						u := strings.TrimSpace(seg[i+1:])
+						if name != "" && u != "" {
+							links = append(links, store.LabLink{Name: name, URL: u})
+						}
+					}
+				}
+				s.LabLinks = links
+			}
+			if *lkey != "" {
+				s.LabManageKey = *lkey
+			} else if s.LabManageKey == "" {
+				s.LabManageKey = store.RandomToken()
+			}
+			return nil
+		}); err != nil {
+			log.Fatal(err)
+		}
+		key := st.GetSettings().LabManageKey
+		log.Println("lab-init 完成（教研工作台已开启）")
+		log.Println("管理密钥:", key)
+		log.Println("管理链接: <服务地址>/lab?k=" + key + "   （打开即管理，无需登录）")
+		return
 	}
 	defaultAddr := ":8090"
 	if mode == "client" {
@@ -154,7 +203,15 @@ func main() {
 	mux.Handle("/lab/mcp", srv.Handler()) // 教研工作台 MCP（WorkBuddy 直连）
 
 	// 静态 WebUI（内嵌），SPA 回退到 index.html
-	mux.Handle("/", web.SPAHandler())
+	// 免账号模式：没建任何账号且配了管理密钥 → 根路径直达教研页（服务只当教研站用）
+	spa := web.SPAHandler()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && srv.Store.UserCount() == 0 && srv.Store.GetSettings().LabManageKey != "" {
+			http.Redirect(w, r, "/lab", http.StatusFound)
+			return
+		}
+		spa.ServeHTTP(w, r)
+	}))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,

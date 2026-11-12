@@ -142,6 +142,8 @@ type Settings struct {
 	LabTitle   string    `json:"lab_title,omitempty"`
 	LabNotice  string    `json:"lab_notice,omitempty"`
 	LabLinks   []LabLink `json:"lab_links,omitempty"`
+	// LabManageKey 教研管理密钥（免账号模式）：持密钥链接即可改配置/删文件，无需登录
+	LabManageKey string `json:"lab_manage_key,omitempty"`
 }
 
 // LabLink 教研工作台的资源直达链接（如「打开 ima 知识库」）。
